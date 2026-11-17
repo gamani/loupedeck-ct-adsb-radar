@@ -20,7 +20,7 @@ The round wheel screen becomes a radar scope over a satellite map, the touch pan
 **Touch panel (12 keys)**
 - **List**: the 12 nearest aircraft, one per key: callsign, flight level with climb / descent marker, route (or ILS runway), distance, country.
 - **Detail card**: tap an aircraft and the 12 keys become its card: from / to, type and registration, altitude, speed, vertical speed, heading dial, distance, squawk, airline.
-- **Airport picker**: button 2 lists the airports around you, 10 per page (airports with scheduled flights first, nearest first), with their runways, distance and the number of aircraft on approach. Tap one to jump to it.
+- **Airport picker**: button 2 lists the airports around you, 10 per page (airports with scheduled flights first, nearest first), with their runways, distance and a live traffic badge: aircraft on final (with the next landing and its time to touchdown), arrivals and departures. Tap one to jump to it.
 
 ![Detail card](docs/screenshots/detail.png)
 
@@ -32,6 +32,7 @@ The round wheel screen becomes a radar scope over a satellite map, the touch pan
 - Aircraft on final approach are detected from their position, track and altitude (aligned within 3°, on a 1.5 to 5° glide path): tiles and banner show e.g. `ILS 23 SXB`.
 - In the detail card, an approach adds a cockpit-style **deviation indicator** (localizer and glide slope needles), the runway, the distance to the threshold, the time to touchdown and the actual glide angle.
 - **Airport mode** centres the scope on the selected airport and lists only its traffic (on approach, inbound or outbound).
+- Arrivals and departures come from the route when it is known; otherwise an aircraft climbing or descending below FL200 within 60 km is attached to the nearest airport with scheduled flights. Traffic is limited to what your receiver hears: finals at distant airports are usually below its horizon.
 
 ![Approach](docs/screenshots/approach.png)
 
