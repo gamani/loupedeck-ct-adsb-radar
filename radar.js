@@ -953,17 +953,32 @@ function drawDetail(g, sel) {
 }
 
 // Airports
-const approachCounts = () => { const m = new Map(); for (const a of aircraft) { const p = approachOf(a); if (p) m.set(p.ap.icao, (m.get(p.ap.icao) || 0) + 1) } return m }
+// Per airport: how many aircraft are on final, and which one lands next
+function approaches() {
+  const m = new Map()
+  for (const a of aircraft) {
+    const p = approachOf(a); if (!p) continue
+    const e = m.get(p.ap.icao) || { n: 0, next: null }
+    e.n++
+    if (!e.next || p.eta < e.next.eta) e.next = { name: a.flight || a.hex.toUpperCase(), eta: p.eta, rwy: p.end.id }
+    m.set(p.ap.icao, e)
+  }
+  return m
+}
 const runwayNames = ap => ap.runways.map(w => `${w.a.id}/${w.b.id}`).join('  ')
 function drawBearing(g, x, y, brg, color) { glyph(g, { track: brg, category: 'A1' }, x, y, { color, outline: null, scale: 0.75 }) }
 
-function drawAirportTile(g, i, ap, onApproach) {
+function drawAirportTile(g, i, ap, app) {
+  const onApproach = app?.n
   const sel = ap.icao === selAirport, big = ap.type === 'large_airport'
   const b = panel(g, i, { fill: sel ? UI.panelSel : UI.panel, border: sel ? UI.cyan : UI.line, bw: sel ? 2 : 1 })
   const nw = onApproach ? pill(g, String(onApproach), b.r, b.y + 21, { align: 'right', fg: '#001820', bg: UI.cyan, px: 10, padX: 5, h: 15 }) + 4 : 0
   txt(g, ap.iata || ap.icao, b.l, b.y + 25, { px: 19, weight: 700, color: sel ? UI.cyan : big ? UI.text : '#c3ced6', max: b.r - b.l - nw })
   txt(g, ap.city || ap.name, b.l, b.y + 41, { px: 10, weight: 600, color: UI.sub, max: b.r - b.l })
-  txt(g, runwayNames(ap), b.l, b.y + 56, { px: 9, weight: 600, color: UI.mute, max: b.r - b.l })
+  if (app) { // next landing: callsign and time to touchdown
+    const ew = txt(g, app.next.eta < 1 ? '<1 min' : `${Math.round(app.next.eta)} min`, b.r, b.y + 57, { px: 9, weight: 700, color: UI.text, align: 'right' })
+    txt(g, app.next.name, b.l, b.y + 57, { px: 10, weight: 700, color: UI.cyan, max: b.r - b.l - ew - 4 })
+  } else txt(g, runwayNames(ap), b.l, b.y + 56, { px: 9, weight: 600, color: UI.mute, max: b.r - b.l })
   txt(g, fmtKm(ap.homeKm), b.l, b.y + 75, { px: 10, weight: 600, color: UI.sub })
   drawBearing(g, b.r - 5, b.y + 71, ap.homeBrg, UI.sub)
 }
@@ -971,7 +986,7 @@ function drawAirportTile(g, i, ap, onApproach) {
 const PICK = 10 // airports per picker page
 const pickerPages = () => Math.max(1, Math.ceil(airports.length / PICK))
 function drawPicker(g) {
-  const counts = approachCounts()
+  const counts = approaches()
   airports.slice(pickerPage * PICK, pickerPage * PICK + PICK).forEach((ap, k) => { tileAirports[k] = ap.icao; drawAirportTile(g, k, ap, counts.get(ap.icao)) })
   drawNavTile(g, 10, 'close', T.close)
   drawNavTile(g, 11, 'next', T.next, { color: UI.cyan, sub: `${pickerPage + 1} / ${pickerPages()}` })
@@ -1094,7 +1109,7 @@ const withTimeout = (p, what) => Promise.race([p, new Promise((_, rej) => setTim
 const lastSig = { center: '', left: '', right: '' }
 let lastCenterAt = 0, lastWheelAt = 0, forceCenter = false, pending = false, wheelDue = false
 function centerSig() {
-  if (picker) return JSON.stringify(['P', pickerPage, selAirport, [...approachCounts()]])
+  if (picker) return JSON.stringify(['P', pickerPage, selAirport, [...approaches()].map(([k, v]) => [k, v.n, v.next.name, Math.round(v.next.eta)])])
   const sel = aircraft.find(a => a.hex === selectedHex)
   if (sel) return JSON.stringify([sel.hex, getInfo(sel)?.at, approachOf(sel)?.end.id, sel.alt, sel.speed, sel.vrate, Math.round(sel.d * 10), sel.track, sel.squawk])
   return JSON.stringify([airportMode, selAirport, rangeIdx, minAltFt, filterIdx, currentList().slice(0, 12).map(a => [a.hex, !!getInfo(a)?.route, countryOf(a), approachOf(a)?.end.id, Math.round((a.alt ?? 0) / 100), Math.round(a.d), a.track, Math.sign(Math.round((a.vrate ?? 0) / 300)), a.squawk])])
