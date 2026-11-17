@@ -211,6 +211,7 @@ const regCountry = hex => { const h = parseInt(hex, 16); return (ICAO_COUNTRIES.
 const INFO_FILE = new URL('./infos-cache.json', import.meta.url)
 let infoCache = {}
 try { infoCache = JSON.parse(readFileSync(INFO_FILE)) } catch {}
+for (const k of Object.keys(infoCache)) if (infoCache[k].v !== 2) delete infoCache[k] // drop entries from older versions (routes without position check)
 let infoDirty = false
 const infoKey = a => `${a.hex}|${a.flight}`
 const getInfo = a => infoCache[infoKey(a)]
@@ -229,17 +230,34 @@ async function adsbdb(path) {
   const j = await r.json()
   return typeof j.response === 'object' ? j.response : null
 }
+// adsb.lol route API: flags routes that are implausible for the current position (same source as tar1090's route display)
+async function routeFromAdsbLol(a) {
+  const r = await fetch('https://api.adsb.lol/api/0/routeset', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': 'loupedeck-ct-radar/1.0' },
+    body: JSON.stringify({ planes: [{ callsign: a.flight, lat: a.lat, lng: a.lon }] }), signal: AbortSignal.timeout(6000),
+  })
+  if (!r.ok) return null
+  const x = (await r.json())?.[0]
+  const ap = x?._airports || []
+  if (!x || x.plausible === false || ap.length < 2) return null
+  const f = ap[0], t = ap[ap.length - 1]
+  if (f.icao === t.icao) return null
+  return { from: { iata: f.iata || f.icao, city: f.location, iso: f.countryiso2 }, to: { iata: t.iata || t.icao, city: t.location, iso: t.countryiso2 } }
+}
 async function processInfoQueue() {
   const a = infoQueue.shift()
   if (!a) return
-  const info = { at: Date.now() }
+  const info = { at: Date.now(), v: 2 }
   try {
     let res = a.flight ? await adsbdb(`aircraft/${a.hex}?callsign=${encodeURIComponent(a.flight)}`) : await adsbdb(`aircraft/${a.hex}`)
     if (!res && a.flight) { const r1 = await adsbdb(`callsign/${encodeURIComponent(a.flight)}`); const r2 = await adsbdb(`aircraft/${a.hex}`); res = { ...(r1 || {}), ...(r2 || {}) } }
     const ac = res?.aircraft, fr = res?.flightroute
     if (ac) info.aircraft = { type: ac.icao_type || ac.type, model: ac.type, reg: ac.registration, owner: ac.registered_owner, country: ac.registered_owner_country_iso_name }
     if (fr?.airline) info.airline = { name: fr.airline.name, iata: fr.airline.iata, country: fr.airline.country, iso: fr.airline.country_iso }
-    if (fr?.origin && fr?.destination) info.route = {
+    // Route: adsb.lol first (checked against the aircraft position), adsbdb as fallback
+    const lol = a.flight ? await routeFromAdsbLol(a).catch(() => null) : null
+    if (lol) info.route = lol
+    else if (fr?.origin && fr?.destination && (fr.origin.icao_code !== fr.destination.icao_code)) info.route = {
       from: { iata: fr.origin.iata_code || fr.origin.icao_code, city: fr.origin.municipality, iso: fr.origin.country_iso_name },
       to: { iata: fr.destination.iata_code || fr.destination.icao_code, city: fr.destination.municipality, iso: fr.destination.country_iso_name },
     }

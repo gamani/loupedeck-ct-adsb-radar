@@ -63,7 +63,7 @@ Round buttons 2 to 7 are free for your own ideas.
 - Windows 10 / 11 (the launch scripts and font loading are Windows-specific; the code itself is plain Node.js).
 - Node.js 20 or newer.
 - A tar1090 or dump1090 receiver reachable on your network (`/data/aircraft.json`).
-- Internet access for the map tiles (Esri) and the airline / route lookups (adsbdb.com).
+- Internet access for the map tiles (Esri) and the airline / route lookups (adsb.lol, adsbdb.com).
 
 ## Installation
 
@@ -106,7 +106,7 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 
 - Talks to the CT directly over USB serial with the excellent [`loupedeck`](https://github.com/foxxyz/loupedeck) Node.js library, and draws with [`@napi-rs/canvas`](https://github.com/Brooooooklyn/canvas).
 - Aircraft come from your receiver's `aircraft.json` (both the dump1090 and readsb formats are supported).
-- Airline, route and aircraft type come from the free [adsbdb.com](https://www.adsbdb.com) API, one lookup per second at most, cached in `infos-cache.json`. Routes are the ones filed for the flight number, so charter, private and military flights may show none or a wrong one.
+- Routes come from the [adsb.lol](https://api.adsb.lol/docs) route API, which checks them against the aircraft position; airline and aircraft type come from the free [adsbdb.com](https://www.adsbdb.com) API (also a route fallback). At most one lookup per second, cached in `infos-cache.json`. Charter, private and military flights may still show no route.
 - Military detection is a heuristic based on known ICAO address blocks and callsign prefixes.
 - Overflight prediction assumes straight-line flight, so turning or approaching aircraft may deviate.
 - Map tiles are cached in `tiles/`.
@@ -119,7 +119,8 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 
 - [foxxyz/loupedeck](https://github.com/foxxyz/loupedeck): unofficial Loupedeck Node.js API
 - [tar1090](https://github.com/wiedehopf/tar1090): altitude colour scale and military address ranges inspiration
-- [adsbdb.com](https://www.adsbdb.com): aircraft and route data
+- [adsb.lol](https://adsb.lol): route data
+- [adsbdb.com](https://www.adsbdb.com): aircraft, airline and fallback route data
 - Map imagery: Esri World Imagery and World Boundaries and Places (Esri, Maxar, Earthstar Geographics and the GIS User Community). Check Esri's terms of use for your use case.
 
 This project is not affiliated with Loupedeck or Logitech.
