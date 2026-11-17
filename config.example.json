@@ -1,8 +1,8 @@
 {
   "language": "en",
   "tar1090_url": "http://YOUR-RECEIVER-IP/tar1090/",
-  "lat": 50.0379,
-  "lon": 8.5622,
+  "lat": 50.1109,
+  "lon": 8.6821,
   "airport": {
     "name": "EDDF",
     "lat": 50.0333,
@@ -70,6 +70,8 @@
     ],
     "min_runway_ft": 3000,
     "approach_km": 18,
+    "mode_range_km": 25,
     "default": "EDDF"
-  }
+  },
+  "input_refresh_ms": 500
 }

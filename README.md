@@ -10,43 +10,50 @@ The round wheel screen becomes a radar scope over a satellite map, the touch pan
 
 ## Features
 
-**Wheel screen (radar)**
-- Satellite map with country borders and place names, redrawn every frame so the view can **follow** an aircraft.
-- Aircraft arrows coloured by altitude (tar1090-style scale), fading **trails**, rotating radar sweep.
-- **Spotlight banner**: one aircraft at a time with callsign, airline country, route and flight level, cycling through the nearest ones.
+**Wheel screen (radar scope)**
+- Satellite map with borders and place names under a compass rose, range rings and a radar sweep. The view can **follow** an aircraft.
+- Aircraft silhouettes coloured by altitude (tar1090-style scale), fading **trails**, callsign labels that avoid each other.
+- **Spotlight banner**: one aircraft at a time with callsign, flight level, route and country, cycling through the nearest ones.
 - **Overflight prediction**: aircraft about to pass close to your home get a dashed projected path and a countdown ("Overhead 3 min").
-- **Distress outline**: aircraft squawking 7500 / 7600 / 7700 get a pulsing red ring.
+- **Distress ring**: aircraft squawking 7500 / 7600 / 7700 get a pulsing red ring and take over the banner.
 
 **Touch panel (12 keys)**
-- **List mode**: the 12 nearest aircraft, each tile showing callsign, flight level, country, route and distance/heading. The layout matches the physical key grid, so no text is cut.
-- **Detail mode**: tap an aircraft and the 12 keys become its card: from / to, airline, altitude (ft and m), speed (km/h and kt), vertical speed, aircraft type and registration, heading, distance, squawk.
+- **List**: the 12 nearest aircraft, one per key: callsign, flight level with climb / descent marker, route (or ILS runway), distance, country.
+- **Detail card**: tap an aircraft and the 12 keys become its card: from / to, type and registration, altitude, speed, vertical speed, heading dial, distance, squawk, airline.
+- **Airport picker**: button 2 lists the airports around you, 10 per page (airports with scheduled flights first, nearest first), with their runways, distance and the number of aircraft on approach. Tap one to jump to it.
 
 ![Detail card](docs/screenshots/detail.png)
 
+![Airport picker](docs/screenshots/airports.png)
+
 **Airports and ILS-like approaches**
-- Airports within your area are drawn on the radar, with their runways to scale when zoomed in (data: [OurAirports](https://ourairports.com), downloaded once and cached in `airports-cache.json`).
+- Airports are drawn on the scope, with runways to scale when zoomed in (data: [OurAirports](https://ourairports.com), downloaded once and cached).
 - The selected airport shows the extended centreline of each runway (5 km ticks); the runway in use is highlighted when traffic is established on it.
-- Aircraft flying a final approach are detected from their position, track and altitude (aligned within 3°, on a 1.5 to 5° glide path): the list and the spotlight banner show e.g. `ILS 23 SXB · 8.2 km`.
-- In the detail card, an approach replaces heading / distance / squawk with a cockpit-style **deviation indicator** (localizer and glide slope needles), the runway, the distance to the threshold, the time to touchdown and the actual glide angle.
-- **Airport mode** centres the radar on the selected airport at 25 km and lists only its traffic (on approach, inbound or outbound).
+- Aircraft on final approach are detected from their position, track and altitude (aligned within 3°, on a 1.5 to 5° glide path): tiles and banner show e.g. `ILS 23 SXB`.
+- In the detail card, an approach adds a cockpit-style **deviation indicator** (localizer and glide slope needles), the runway, the distance to the threshold, the time to touchdown and the actual glide angle.
+- **Airport mode** centres the scope on the selected airport and lists only its traffic (on approach, inbound or outbound).
+
+![Approach](docs/screenshots/approach.png)
 
 These deviations are computed from ADS-B data (position once per second, altitude in 25 ft steps, no pressure correction), not from the real ILS signal: they are indicative, not certified.
 
 **Alerts**
-- Button 8 blinks and the CT vibrates for emergencies (red), low military aircraft nearby (orange), and low aircraft / imminent overflight (yellow). The emergency aircraft is selected and followed automatically.
+- Button 8 blinks and the CT vibrates for emergencies (red), low military aircraft nearby (orange), and low aircraft / imminent overflight (yellow). An emergency aircraft is selected and followed automatically.
 - Optional push notification through Home Assistant.
 
 ![Emergency squawk](docs/screenshots/emergency.png)
 
-**Night mode**: button 1 dims everything and switches all screens to red, which is easy on the eyes at night.
+**Night mode**: button 1 dims everything and switches all screens to red.
 
 ![Night mode](docs/screenshots/night-mode.png)
+
+**Look and feel**: colours follow glass-cockpit conventions (white data, cyan for what you can select, green for engaged modes, amber for caution, red for warnings, magenta for guidance). Knob values are echoed on the side strips, and the touch panel answers inputs immediately.
 
 ## Controls
 
 | Control | Turn | Press |
 |---|---|---|
-| Big wheel | Range (10 / 25 / 50 / 100 / 200 / 300 km) | Cycle the selected aircraft |
+| Big wheel | Range (10 / 25 / 50 / 100 / 200 / 300 km); pages in the airport picker | Cycle the selected aircraft; close the picker |
 | Top-left knob | Minimum altitude filter | Reset |
 | Middle-left knob | Filter: all, military, helicopters, low altitude, airport, heavies, overhead | Reset to all |
 | Bottom-left knob | Screen brightness | |
@@ -57,15 +64,17 @@ These deviations are computed from ADS-B data (position once per second, altitud
 | Button | Action |
 |---|---|
 | Round button 1 | Night mode on / off |
-| Round button 2 | Select the next airport in view |
+| Round button 2 | Open / close the airport picker |
 | Round button 3 | Airport mode on / off |
 | Round button 8 | Alert indicator; press to acknowledge alerts for 5 minutes |
 | A / B / C / D (arrows) | Pan the map (stops following) |
-| E or Home (○) | Back to home, stop following |
+| E or Home (○) | Back to home: leaves airport mode, stops following |
 | Tap a tile | Open the aircraft card and follow it on the radar |
 | Tap "Back" | Back to the list, the radar returns home |
 | Tap an aircraft on the wheel | Select and follow it |
-| Tap an airport on the wheel | Select that airport |
+| Tap an airport on the wheel | Select that airport (centrelines) |
+| Tap an airport in the picker | Select it and switch to airport mode |
+| Tap the airport tile (airport mode) | Open the picker |
 
 Round buttons 4 to 7 are free for your own ideas.
 
@@ -100,10 +109,11 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 | `tar1090_url` | | Base URL of your tar1090 / dump1090 web interface |
 | `lat`, `lon` | | Home position |
 | `airport` | | `{ name, lat, lon, radius_km, below_ft }` for the airport filter |
-| `airports` | | `enabled`, `radius_km` (area loaded), `types` (OurAirports types), `min_runway_ft`, `approach_km` (centreline length), `default` (ICAO or IATA of the airport selected at start) |
+| `airports` | | `enabled`, `radius_km` (area loaded), `types` (OurAirports types), `min_runway_ft`, `approach_km` (centreline length), `mode_range_km` (range used by airport mode), `default` (ICAO or IATA of the airport selected at start) |
 | `font` | `segoe` | `segoe`, `bahnschrift` (condensed, DIN-like) or `arial` |
 | `ranges_km`, `default_range_km` | 10 to 300, 100 | Radar ranges |
 | `fps` | `1` | Wheel refresh rate. The CT wheel screen drops frames when flooded; 1 is safe, 2 may work |
+| `input_refresh_ms` | `500` | Minimum delay between two wheel redraws triggered by an input (the touch panel always answers immediately) |
 | `trail_minutes` | `3` | Default trail length |
 | `labels_max` | `6` | Default number of callsign labels |
 | `spotlight`, `spotlight_sec`, `spotlight_count` | `true`, `4`, `8` | Spotlight banner |
