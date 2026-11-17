@@ -1,0 +1,7 @@
+node_modules/
+config.json
+infos-cache.json
+tiles/
+*.log
+radar-log.txt
+setup-log.txt

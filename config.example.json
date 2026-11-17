@@ -1,0 +1,64 @@
+{
+  "language": "en",
+  "tar1090_url": "http://YOUR-RECEIVER-IP/tar1090/",
+  "lat": 50.0379,
+  "lon": 8.5622,
+  "airport": {
+    "name": "EDDF",
+    "lat": 50.0333,
+    "lon": 8.5706,
+    "radius_km": 25,
+    "below_ft": 8000
+  },
+  "font": "segoe",
+  "ranges_km": [
+    10,
+    25,
+    50,
+    100,
+    200,
+    300
+  ],
+  "default_range_km": 100,
+  "poll_ms": 1000,
+  "fps": 1,
+  "center_min_ms": 1500,
+  "sweep_deg_per_frame": 30,
+  "labels_max": 6,
+  "trail_minutes": 3,
+  "spotlight": true,
+  "spotlight_sec": 4,
+  "spotlight_count": 8,
+  "night_brightness": 0.3,
+  "alert": {
+    "radius_km": 10,
+    "below_ft": 5000,
+    "military_radius_km": 30,
+    "military_below_ft": 10000,
+    "emergency": true,
+    "ha_notify": ""
+  },
+  "overflight": {
+    "radius_km": 3,
+    "horizon_min": 10,
+    "alert_min": 2,
+    "spotlight_min": 5
+  },
+  "ha_url": "",
+  "ha_token": "",
+  "map": {
+    "enabled": true,
+    "brightness": 0.75,
+    "layers": [
+      {
+        "url": "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        "dim": 0.45
+      },
+      {
+        "url": "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+        "opacity": 0.9
+      }
+    ]
+  },
+  "debug": false
+}
