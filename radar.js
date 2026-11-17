@@ -1146,7 +1146,10 @@ let lastCenterAt = 0, lastWheelAt = 0, forceCenter = false, pending = false, whe
 function centerSig() {
   if (picker) return JSON.stringify(['P', pickerPage, selAirport, [...airportStats()].map(([k, v]) => [k, v.app, v.arr, v.dep, v.next?.name, Math.round(v.next?.eta ?? 0)])])
   const sel = aircraft.find(a => a.hex === selectedHex)
-  if (sel) return JSON.stringify([sel.hex, getInfo(sel)?.at, approachOf(sel)?.end.id, sel.alt, sel.speed, sel.vrate, Math.round(sel.d * 10), sel.track, sel.squawk])
+  if (sel) {
+    const app = approachOf(sel) // on approach the needles move, so their position is part of the signature
+    return JSON.stringify([sel.hex, getInfo(sel)?.at, app && [app.end.id, Math.round(app.locDev * 20), Math.round(app.gsDev * 20), Math.round(app.along * 10)], sel.alt, sel.speed, sel.vrate, Math.round(sel.d * 10), sel.track, sel.squawk])
+  }
   return JSON.stringify([airportMode, selAirport, rangeIdx, minAltFt, filterIdx, currentList().slice(0, 12).map(a => [a.hex, !!getInfo(a)?.route, countryOf(a), approachOf(a)?.end.id, Math.round((a.alt ?? 0) / 100), Math.round(a.d), a.track, Math.sign(Math.round((a.vrate ?? 0) / 300)), a.squawk])])
 }
 async function render({ wheel = true } = {}) {
@@ -1159,7 +1162,9 @@ async function render({ wheel = true } = {}) {
     const rs = JSON.stringify(rightCells())
     if (rs !== lastSig.right) { lastSig.right = rs; await withTimeout(device.drawBuffer({ id: 'right', width: 60, height: 270 }, drawSide(rightCells())), 'right') }
     const sig = centerSig()
-    if (forceCenter || (sig !== lastSig.center && Date.now() - lastCenterAt > (cfg.center_min_ms ?? 1500))) {
+    const selApp = selectedHex && !picker && approachOf(aircraft.find(a => a.hex === selectedHex) || {})
+    const minGap = selApp ? Math.min(900, cfg.center_min_ms ?? 1500) : (cfg.center_min_ms ?? 1500) // an approach card follows every position update
+    if (forceCenter || (sig !== lastSig.center && Date.now() - lastCenterAt > minGap)) {
       forceCenter = false; lastSig.center = sig; lastCenterAt = Date.now()
       await withTimeout(device.drawBuffer({ id: 'center', width: 360, height: 270 }, drawCenter()), 'centre')
     }
