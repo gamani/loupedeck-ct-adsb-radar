@@ -23,12 +23,12 @@ const STRINGS = {
     military: 'MILITARY', from: 'FROM', to: 'TO', airline: 'AIRLINE', altitude: 'ALTITUDE', speed: 'SPEED', vs: 'V/S', aircraft: 'AIRCRAFT',
     heading: 'HEADING', distance: 'DISTANCE', squawk: 'SQUAWK', back: '← Back', unknown: 'unknown', noAircraft: r => `No aircraft within ${r} km`,
     kmAt: b => `km at ${b}°`, altMin: 'MIN ALT', none: 'none', filter: 'FILTER', bright: 'BRIGHTN.', labels: 'LABELS', trails: 'TRAILS', map: 'MAP',
-    overflight: t => `Overhead ${t} min`, at: d => `${d} km`, locale: 'en-GB' },
+    overflight: t => `Overhead ${t} min`, at: d => `${d} km`, locale: 'en-GB', eta: 'TOUCHDOWN', slope: 'glide', approach: 'APPROACH', loc: 'LOC', gs: 'GS', airportTraffic: 'traffic' },
   fr: { filters: ['TOUS', 'MILITAIRES', 'HELICOS', 'BASSE ALT.', 'AEROPORT', 'GROS PORTEURS', 'AU-DESSUS'], follow: 'SUIVI', ground: 'SOL',
     military: 'MILITAIRE', from: 'DEPART', to: 'ARRIVEE', airline: 'COMPAGNIE', altitude: 'ALTITUDE', speed: 'VITESSE', vs: 'V/S', aircraft: 'APPAREIL',
     heading: 'CAP', distance: 'DISTANCE', squawk: 'SQUAWK', back: '← Retour', unknown: 'inconnu', noAircraft: r => `Aucun avion dans ${r} km`,
     kmAt: b => `km au ${b}°`, altMin: 'ALT MIN', none: 'aucun', filter: 'FILTRE', bright: 'LUMINOS.', labels: 'ETIQUETTES', trails: 'TRAINEES', map: 'CARTE',
-    overflight: t => `Survol ${t} min`, at: d => `à ${d} km`, locale: 'fr-FR' },
+    overflight: t => `Survol ${t} min`, at: d => `à ${d} km`, locale: 'fr-FR', eta: 'TOUCHER', slope: 'pente', approach: 'APPROCHE', loc: 'LOC', gs: 'GS', airportTraffic: 'trafic' },
 }
 const T = STRINGS[cfg.language] || STRINGS.en
 const RANGES = cfg.ranges_km
@@ -66,7 +66,7 @@ let spotIdx = 0, spotAt = 0                  // spotlight banner on the wheel sc
 let follow = true                            // the view follows the selected aircraft
 let lastSelected = null
 let lostSince = 0
-function goHome() { view = { lat: cfg.lat, lon: cfg.lon } }
+function goHome() { const ap = airportMode && airportByIcao(selAirport); view = ap ? { lat: ap.lat, lon: ap.lon } : { lat: cfg.lat, lon: cfg.lon } }
 function updateFollow() {
   if (selectedHex !== lastSelected) { // selection changed
     if (!selectedHex && lastSelected) goHome() // end of follow: back to home
@@ -191,6 +191,115 @@ function overflight(a) {
   return { t, d, lat: cfg.lat + dy / 111.32, lon: cfg.lon + dx / (111.32 * Math.cos(toRad(cfg.lat))) }
 }
 const nextOverflight = () => aircraft.map(a => ({ a, o: overflight(a) })).filter(x => x.o).sort((p, q) => p.o.t - q.o.t)[0] || null
+
+// ---------- Airports, runways and ILS-like approach detection (data: OurAirports, public domain) ----------
+const AP = Object.assign({ enabled: true, radius_km: 350, types: ['large_airport', 'medium_airport'], min_runway_ft: 3000, approach_km: 18, default: '' }, cfg.airports || {})
+const AP_CACHE = new URL('./airports-cache.json', import.meta.url)
+const OA = 'https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/'
+let airports = []         // [{ icao, iata, name, city, type, lat, lon, elev, runways: [{ a: {...}, b: {...} }], ends: [approach ends] }]
+let selAirport = null     // selected airport (icao)
+let airportMode = false   // view and list centred on the selected airport
+function parseCSV(text) {
+  const rows = []; let row = [], f = '', q = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++ } else q = false } else f += c }
+    else if (c === '"') q = true
+    else if (c === ',') { row.push(f); f = '' }
+    else if (c === '\n') { row.push(f); rows.push(row); row = []; f = '' }
+    else if (c !== '\r') f += c
+  }
+  if (f || row.length) { row.push(f); rows.push(row) }
+  const head = rows.shift()
+  return rows.map(r => Object.fromEntries(head.map((h, i) => [h, r[i]])))
+}
+const bearing = (a, b) => { const p1 = toRad(a.lat), p2 = toRad(b.lat), dl = toRad(b.lon - a.lon); return (Math.atan2(Math.sin(dl) * Math.cos(p2), Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl)) * 180 / Math.PI + 360) % 360 }
+const offsetPt = (p, brgDeg, km) => ({ lat: p.lat + km * Math.cos(toRad(brgDeg)) / 111.32, lon: p.lon + km * Math.sin(toRad(brgDeg)) / (111.32 * Math.cos(toRad(p.lat))) })
+async function loadAirports() {
+  if (!AP.enabled) return
+  try {
+    const c = JSON.parse(readFileSync(AP_CACHE))
+    if (c.v === 1 && Math.abs(c.lat - cfg.lat) < 0.5 && Math.abs(c.lon - cfg.lon) < 0.5 && c.radius >= AP.radius_km && JSON.stringify(c.types) === JSON.stringify(AP.types)) airports = c.airports
+  } catch {}
+  if (!airports.length) {
+    console.log('Downloading airport and runway data (OurAirports, once)...')
+    const get = async f => { const r = await fetch(OA + f, { signal: AbortSignal.timeout(120000) }); if (!r.ok) throw new Error(`${f}: HTTP ${r.status}`); return r.text() }
+    const [aCsv, rCsv] = await Promise.all([get('airports.csv'), get('runways.csv')])
+    const home = { lat: cfg.lat, lon: cfg.lon }
+    const byId = new Map()
+    for (const a of parseCSV(aCsv)) {
+      if (!AP.types.includes(a.type)) continue
+      const p = { lat: +a.latitude_deg, lon: +a.longitude_deg }
+      if (kmBetween(home, p) > AP.radius_km) continue
+      byId.set(a.id, { icao: a.icao_code || a.gps_code || a.ident, iata: a.iata_code || '', name: a.name, city: a.municipality, type: a.type, ...p, elev: +a.elevation_ft || 0, runways: [] })
+    }
+    const paved = /ASP|CON|PEM|BIT|TAR|ASF|PAV|HARD/i
+    for (const w of parseCSV(rCsv)) {
+      const ap = byId.get(w.airport_ref)
+      if (!ap || w.closed === '1' || +w.length_ft < AP.min_runway_ft || !paved.test(w.surface || '') || !w.le_latitude_deg || !w.he_latitude_deg) continue
+      const end = (id, la, lo, el, hd, disp) => ({ id, lat: +la, lon: +lo, elev: el ? +el : ap.elev, hdg: hd ? +hd : null, disp: disp ? +disp * 0.0003048 : 0 })
+      ap.runways.push({ a: end(w.le_ident, w.le_latitude_deg, w.le_longitude_deg, w.le_elevation_ft, w.le_heading_degT, w.le_displaced_threshold_ft),
+                        b: end(w.he_ident, w.he_latitude_deg, w.he_longitude_deg, w.he_elevation_ft, w.he_heading_degT, w.he_displaced_threshold_ft) })
+    }
+    airports = [...byId.values()].filter(a => a.runways.length)
+    try { writeFileSync(AP_CACHE, JSON.stringify({ v: 1, lat: cfg.lat, lon: cfg.lon, radius: AP.radius_km, types: AP.types, airports })) } catch {}
+  }
+  // Approach ends: landing on end X means flying X's heading towards X's (displaced) threshold
+  for (const ap of airports) {
+    ap.ends = []
+    for (const w of ap.runways) for (const [x, y] of [[w.a, w.b], [w.b, w.a]]) {
+      const course = x.hdg ?? bearing(x, y)
+      const thr = x.disp ? offsetPt(x, course, x.disp) : { lat: x.lat, lon: x.lon }
+      ap.ends.push({ id: x.id, course, ...thr, elev: x.elev })
+    }
+  }
+  const def = String(AP.default || cfg.airport?.icao || '').toUpperCase()
+  selAirport = ((def && airports.find(a => a.icao === def || a.iata === def)) || (cfg.airport?.lat != null ? airports.slice().sort((p, q) => kmBetween(p, cfg.airport) - kmBetween(q, cfg.airport))[0] : null))?.icao || null
+  console.log(`Airports loaded: ${airports.length}${selAirport ? `, selected ${selAirport}` : ''}`)
+}
+const airportByIcao = icao => airports.find(a => a.icao === icao)
+
+// Is the aircraft flying an ILS-like final approach? (geometry from ADS-B position, not the real ILS signal)
+const ilsCache = new Map()
+function approachOf(a) {
+  const k = `${a.hex}|${a.lat}|${a.lon}|${a.alt}`
+  if (ilsCache.has(k)) return ilsCache.get(k)
+  let best = null
+  if (a.alt != null && !a.ground && a.track != null && a.alt < 12000 && (a.vrate ?? 0) < 500) {
+    for (const ap of airports) {
+      if (Math.abs(ap.lat - a.lat) > 0.4 || Math.abs(ap.lon - a.lon) > 0.6) continue
+      for (const e of ap.ends) {
+        const dKm = kmBetween(e, a)
+        if (dKm < 0.3 || dKm > AP.approach_km * 1.6) continue
+        const brgFromThr = bearing(e, a)                       // bearing threshold -> aircraft
+        const off = ((brgFromThr - (e.course + 180)) + 540) % 360 - 180 // angle off the extended centreline
+        if (Math.abs(off) > 3) continue
+        const hdgDiff = Math.abs(((a.track - e.course) + 540) % 360 - 180)
+        if (hdgDiff > 30) continue
+        const along = dKm * Math.cos(toRad(off)), hAgl = (a.alt - e.elev) * 0.3048
+        if (hAgl < 0) continue
+        const glide = Math.atan(hAgl / (along * 1000)) * 180 / Math.PI
+        if (glide < 1.5 || glide > 5) continue
+        const locDev = -off                                     // + = aircraft right of centreline (seen from the aircraft)
+        const cand = { ap, end: e, along, locDev, glide, gsDev: glide - 3, eta: along / Math.max(1, (a.speed || 140) * 1.852 / 60) }
+        if (!best || Math.abs(off) < Math.abs(-best.locDev)) best = cand
+      }
+    }
+  }
+  if (ilsCache.size > 500) ilsCache.clear()
+  ilsCache.set(k, best)
+  return best
+}
+
+// Traffic related to the selected airport (inbound / outbound / on approach)
+function airportTraffic() {
+  const ap = airportByIcao(selAirport); if (!ap) return []
+  return aircraft.filter(a => {
+    if (approachOf(a)?.ap === ap) return true
+    const r = getInfo(a)?.route
+    return r && (r.to.iata === ap.iata || r.from.iata === ap.iata || r.to.iata === ap.icao || r.from.iata === ap.icao) && kmBetween(a, ap) < 120
+  }).sort((p, q) => kmBetween(p, ap) - kmBetween(q, ap))
+}
 
 // Filters (cycled with the middle-left knob)
 const FILTERS = [
@@ -395,7 +504,9 @@ function drawRadar() {
   g.fillText(`${RANGES[rangeIdx]} km`, C + 3, C - RMAX + 22)
   if (selectedHex && follow) { g.textAlign = 'right'; g.font = `bold 9px ${FONT}`; g.fillStyle = '#fff'; g.fillText(T.follow, C - 4, C - RMAX + 22) }
   if (filterIdx) { g.textAlign = 'center'; g.font = `bold 9px ${FONT}`; g.fillStyle = FILTERS[filterIdx].color; g.fillText(FILTERS[filterIdx].name, C, 24) }
+  if (airportMode && selAirport) { const ap = airportByIcao(selAirport); g.textAlign = 'center'; g.font = `bold 9px ${FONT}`; g.fillStyle = '#7ff'; g.fillText(`${ap?.iata || selAirport} · ${T.approach}`, C, filterIdx ? 35 : 24) }
 
+  drawAirports(g)
   const list = visible()
   // Trails
   if (trailMin > 0) {
@@ -454,12 +565,51 @@ function drawRadar() {
   return toRGB565(knobCanvas, true)
 }
 
+// Airports: runways to scale, labels, extended centrelines of the selected airport
+function drawAirports(g) {
+  if (!airports.length) return
+  const range = RANGES[rangeIdx], K = pxPerZ0(range)
+  const inUse = new Set(aircraft.map(approachOf).filter(Boolean).map(x => `${x.ap.icao}|${x.end.id}`))
+  for (const ap of airports) {
+    const [x, y] = plotXY(ap)
+    if (x < -30 || x > 270 || y < -30 || y > 270) continue
+    const sel = ap.icao === selAirport
+    if (range <= 300 && (ap.type === 'large_airport' || range <= 100 || sel)) {
+      // extended centrelines (selected airport only)
+      if (sel) for (const e of ap.ends) {
+        const far = offsetPt(e, e.course + 180, AP.approach_km)
+        const [x0, y0] = plotXY(e), [x1, y1] = plotXY(far)
+        const active = inUse.has(`${ap.icao}|${e.id}`)
+        g.strokeStyle = active ? 'rgba(0,255,255,0.95)' : 'rgba(0,220,255,0.45)'; g.lineWidth = active ? 1.6 : 1; g.setLineDash([4, 4])
+        g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke(); g.setLineDash([])
+        for (let km = 5; km < AP.approach_km; km += 5) { // 5 km ticks
+          const [tx, ty] = plotXY(offsetPt(e, e.course + 180, km)), n = toRad(e.course + 90)
+          g.beginPath(); g.moveTo(tx - 3 * Math.cos(n), ty - 3 * Math.sin(n)); g.lineTo(tx + 3 * Math.cos(n), ty + 3 * Math.sin(n)); g.stroke()
+        }
+        if (range <= 50) { g.fillStyle = active ? '#0ff' : 'rgba(0,220,255,0.8)'; g.font = `bold 9px ${FONT}`; g.textAlign = 'center'; g.fillText(e.id, x1, y1 + 3) }
+      }
+      // runways to scale, or a dot when tiny
+      const big = range <= 50
+      g.strokeStyle = sel ? '#7ff' : 'rgba(120,230,255,0.85)'; g.lineWidth = big ? 2.5 : 2
+      for (const w of ap.runways) { const [ax, ay] = plotXY(w.a), [bx, by] = plotXY(w.b); g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.stroke() }
+      if (!big) { g.fillStyle = sel ? '#7ff' : 'rgba(120,230,255,0.85)'; g.beginPath(); g.arc(x, y, sel ? 3 : 2, 0, Math.PI * 2); g.fill() }
+      const label = ap.iata || ap.icao
+      if (range <= 100 || sel || ap.type === 'large_airport') {
+        g.font = `bold ${sel ? 10 : 8}px ${FONT}`; g.textAlign = 'left'
+        g.lineWidth = 3; g.strokeStyle = 'rgba(0,0,0,0.8)'; g.strokeText(label, x + 5, y + 10)
+        g.fillStyle = sel ? '#7ff' : 'rgba(150,235,255,0.9)'; g.fillText(label, x + 5, y + 10)
+      }
+    }
+  }
+}
+
 // Spotlight banner: one aircraft at a time, at the bottom of the wheel screen
 function drawSpotlight(g, list) {
   if (cfg.spotlight === false) return
   let a = aircraft.find(p => p.hex === selectedHex)
   const nx = nextOverflight()
   if (!a && nx && nx.o.t <= (cfg.overflight?.spotlight_min ?? 5)) a = nx.a   // an imminent overflight takes over the banner
+  if (!a && airportMode) { const onApp = aircraft.filter(p => approachOf(p)?.ap.icao === selAirport).sort((p, q) => approachOf(p).along - approachOf(q).along)[0]; if (onApp) a = onApp }
   if (!a) {
     const pool = list.slice().sort((p, q) => kmBetween(p, view) - kmBetween(q, view)).slice(0, cfg.spotlight_count ?? 8)
     if (!pool.length) return
@@ -492,13 +642,15 @@ function drawSpotlight(g, list) {
     g.beginPath(); g.moveTo(x, y); g.lineTo(px, py); g.stroke(); g.setLineDash([])
     g.fillStyle = '#ffd600'; g.beginPath(); g.arc(px, py, 2, 0, Math.PI * 2); g.fill()
   }
+  const app = !ov && approachOf(a)
   const mid = ov ? T.overflight(ov.t < 1 ? '<1' : Math.round(ov.t))
+    : app ? `ILS ${app.end.id} · ${app.along.toFixed(1)} km`
     : info.route ? `${info.route.from.iata} › ${info.route.to.iata}` : (info.aircraft?.type || `${a.d.toFixed(0)} km`)
   const right = ov ? T.at(ov.d.toFixed(1)) : alt
   g.textAlign = 'right'; g.fillStyle = ov ? '#ffd600' : col; g.font = `bold 10px ${FONT}`; g.fillText(right, bx + bw - 8, by + 28)
   const rw = g.measureText(right).width
-  g.textAlign = 'left'; g.fillStyle = ov ? '#ffd600' : '#cde'
-  fitText(g, mid, bw - 22 - rw - 6, 10, ov ? 'bold' : 'normal')
+  g.textAlign = 'left'; g.fillStyle = ov ? '#ffd600' : app ? '#0ff' : '#cde'
+  fitText(g, mid, bw - 22 - rw - 6, 10, ov || app ? 'bold' : 'normal')
   g.fillText(mid, bx + 14, by + 28)
   if (a.hex !== selectedHex) wantInfo(a, true)
 }
@@ -534,7 +686,9 @@ function drawListTile(g, i, a) {
   if (iso) { g.textAlign = 'right'; g.fillStyle = '#fd5'; g.font = `bold 12px ${FONT}`; g.fillText(iso, x + w - 4, y + 41) }
   // line 3: route
   g.textAlign = 'center'
-  if (info?.route) { g.fillStyle = '#cde'; fitText(g, `${info.route.from.iata}›${info.route.to.iata}`, w - 4, 13); g.fillText(`${info.route.from.iata}›${info.route.to.iata}`, x + w / 2, y + 59) }
+  const app = approachOf(a)
+  if (app) { g.fillStyle = '#0ff'; fitText(g, `ILS ${app.end.id} ${app.ap.iata || app.ap.icao}`, w - 4, 13); g.fillText(`ILS ${app.end.id} ${app.ap.iata || app.ap.icao}`, x + w / 2, y + 59) }
+  else if (info?.route) { g.fillStyle = '#cde'; fitText(g, `${info.route.from.iata}›${info.route.to.iata}`, w - 4, 13); g.fillText(`${info.route.from.iata}›${info.route.to.iata}`, x + w / 2, y + 59) }
   else if (info?.aircraft?.type) { g.fillStyle = '#789'; g.font = `12px ${FONT}`; g.fillText(info.aircraft.type, x + w / 2, y + 59) }
   // line 4: distance + heading
   g.fillStyle = '#9ab'; g.font = `11px ${FONT}`
@@ -553,6 +707,27 @@ function drawInfoTile(g, i, label, value, color = '#fff', sub = '') {
   g.fillStyle = '#6b7b86'; g.font = `11px ${FONT}`; g.fillText(label, x + w / 2, y + 16)
   g.fillStyle = color; fitText(g, value, w - 6, 22); g.fillText(value, x + w / 2, y + 50)
   if (sub) { g.fillStyle = '#9ab'; fitText(g, sub, w - 6, 12, 'normal'); g.fillText(sub, x + w / 2, y + 70) }
+}
+
+// Cockpit-style deviation indicator: magenta needles, 2 dots = full scale (LOC 2.5°, GS 0.7°)
+function drawIlsTile(g, i, app) {
+  const [x0, y0] = tileOrigin(i), x = x0 + PAD, y = y0 + PAD, w = TILE - 2 * PAD, cx = x + w / 2, cy = y + w / 2 + 4
+  g.fillStyle = '#0d1418'; g.fillRect(x, y, w, w)
+  g.fillStyle = '#6b7b86'; g.font = `9px ${FONT}`; g.textAlign = 'left'; g.fillText(T.loc, x + 4, y + 11); g.textAlign = 'right'; g.fillText(T.gs, x + w - 4, y + 11)
+  const dot = 13
+  g.strokeStyle = '#bcd'; g.lineWidth = 1
+  for (let k = -2; k <= 2; k++) {
+    if (!k) continue
+    g.beginPath(); g.arc(cx + k * dot, cy, 2.2, 0, Math.PI * 2); g.stroke()
+    g.beginPath(); g.arc(cx, cy + k * dot, 2.2, 0, Math.PI * 2); g.stroke()
+  }
+  g.fillStyle = '#fd5'; g.fillRect(cx - 6, cy - 1, 12, 2); g.fillRect(cx - 1, cy - 6, 2, 12) // aircraft symbol
+  const clamp = v => Math.max(-2.3, Math.min(2.3, v))
+  const lx = cx - clamp(app.locDev / 1.25) * dot      // aircraft right of centreline -> needle left (fly left)
+  const gy = cy + clamp(app.gsDev / 0.35) * dot       // aircraft above glide path -> needle down (fly down)
+  g.strokeStyle = '#ff3cff'; g.lineWidth = 2.5
+  g.beginPath(); g.moveTo(lx, cy - 2.4 * dot); g.lineTo(lx, cy + 2.4 * dot); g.stroke()
+  g.beginPath(); g.moveTo(cx - 2.4 * dot, gy); g.lineTo(cx + 2.4 * dot, gy); g.stroke()
 }
 
 function drawCenter() {
@@ -581,13 +756,20 @@ function drawCenter() {
     drawInfoTile(g, 5, T.speed, sel.speed != null ? `${Math.round(sel.speed * 1.852)}` : '?', '#fff', sel.speed != null ? `km/h · ${Math.round(sel.speed)} kt` : '')
     drawInfoTile(g, 6, T.vs, sel.vrate != null ? `${sel.vrate > 0 ? '+' : ''}${sel.vrate}` : '?', sel.vrate > 300 ? '#7f7' : sel.vrate < -300 ? '#fa5' : '#fff', 'ft/min')
     drawInfoTile(g, 7, T.aircraft, ac?.type || sel.type || '?', '#fff', ac?.reg || '')
-    drawInfoTile(g, 8, T.heading, sel.track != null ? `${Math.round(sel.track)}°` : '?')
-    drawInfoTile(g, 9, T.distance, `${sel.d.toFixed(1)}`, '#fff', T.kmAt(Math.round(sel.brg)))
-    drawInfoTile(g, 10, T.squawk, sel.squawk || '----', isEmergency(sel.squawk) ? '#ff4040' : '#fff', sel.hex.toUpperCase())
+    const app = approachOf(sel)
+    if (app) { // ILS-like approach: deviation indicator + runway + time to touchdown
+      drawIlsTile(g, 8, app)
+      drawInfoTile(g, 9, `ILS ${app.ap.iata || app.ap.icao}`, app.end.id, '#0ff', `${app.along.toFixed(1)} km`)
+      drawInfoTile(g, 10, T.eta, app.eta < 1 ? '<1 min' : `${Math.round(app.eta)} min`, '#fff', `${T.slope} ${app.glide.toFixed(1)}°`)
+    } else {
+      drawInfoTile(g, 8, T.heading, sel.track != null ? `${Math.round(sel.track)}°` : '?')
+      drawInfoTile(g, 9, T.distance, `${sel.d.toFixed(1)}`, '#fff', T.kmAt(Math.round(sel.brg)))
+      drawInfoTile(g, 10, T.squawk, sel.squawk || '----', isEmergency(sel.squawk) ? '#ff4040' : '#fff', sel.hex.toUpperCase())
+    }
     drawInfoTile(g, 11, '', T.back, '#8fa')
     tileHexes = []
   } else {
-    const list = visible().slice(0, 12)
+    const list = (airportMode ? airportTraffic() : visible()).slice(0, 12)
     tileHexes = list.map(a => a.hex)
     list.forEach((a, i) => drawListTile(g, i, a))
     if (!list.length) { g.fillStyle = '#6b7b86'; g.font = `16px ${FONT}`; g.textAlign = 'center'; g.fillText(T.noAircraft(RANGES[rangeIdx]), 180, 140) }
@@ -650,12 +832,14 @@ async function notifyHA(msg) {
   } catch (e) { console.error('Home Assistant notification:', e.message) }
 }
 
-// LEDs: button 1 = night mode, button 8 = alert (blinking)
+// LEDs: button 1 = night mode, 2 = next airport, 3 = airport mode, 8 = alert (blinking)
 let blink = false, lastLeds = ''
 function updateLeds() {
   blink = !blink
   const cols = Array(7).fill('#000000') // buttons 2 to 7 are free
   if (night) cols[0] = '#400000'          // button 1 = night mode
+  if (selAirport) cols[1] = '#004060'     // button 2 = next airport
+  if (airportMode) cols[2] = '#00c0ff'    // button 3 = airport mode
   const alertCol = { emerg: '#ff0000', warn: '#ff6a00', info: '#ffd000' }[alertLevel]
   cols.push(alertCol ? (blink || alertLevel === 'info' ? alertCol : '#000000') : '#000000')
   const sig = cols.join()
@@ -670,8 +854,8 @@ const lastSig = { center: '', left: '', right: '' }
 let lastCenterAt = 0
 function centerSig() {
   const sel = aircraft.find(a => a.hex === selectedHex)
-  if (sel) return JSON.stringify([sel.hex, !!getInfo(sel), sel.alt, sel.speed, sel.vrate, Math.round(sel.d * 10), sel.track, Math.round(sel.seenPos / 5)])
-  return JSON.stringify([rangeIdx, minAltFt, filterIdx, visible().slice(0, 12).map(a => [a.hex, !!getInfo(a)?.route, countryOf(a), Math.round((a.alt ?? 0) / 100), Math.round(a.d), a.track])])
+  if (sel) return JSON.stringify([sel.hex, !!getInfo(sel), !!approachOf(sel), sel.alt, sel.speed, sel.vrate, Math.round(sel.d * 10), sel.track, Math.round(sel.seenPos / 5)])
+  return JSON.stringify([airportMode, selAirport, rangeIdx, minAltFt, filterIdx, (airportMode ? airportTraffic() : visible()).slice(0, 12).map(a => [a.hex, !!getInfo(a)?.route, countryOf(a), Math.round((a.alt ?? 0) / 100), Math.round(a.d), a.track])])
 }
 async function render() {
   if (!device || busy) return
@@ -703,7 +887,31 @@ function selectNearestTo(x, y) {
     const d = (px - x) ** 2 + (py - y) ** 2
     if (d < bd) { bd = d; best = a }
   }
+  let bestAp = null, bdAp = 1e9
+  for (const ap of airports) { const [px, py] = plotXY(ap); const d = (px - x) ** 2 + (py - y) ** 2; if (d < bdAp) { bdAp = d; bestAp = ap } }
+  if (bestAp && bdAp < 20 ** 2 && bdAp < bd) { selAirport = bestAp.icao; refreshCenterNow(); return } // tap on an airport selects it
   selectedHex = best && bd < 30 ** 2 ? best.hex : null
+  refreshCenterNow()
+}
+
+// Airport selection: cycle through the airports in view (nearest to the view centre first)
+function nextAirport() {
+  const r = RANGES[rangeIdx] * 1.45
+  const inView = airports.filter(a => kmBetween(a, view) <= r).sort((p, q) => kmBetween(p, view) - kmBetween(q, view))
+  const pool = inView.length ? inView : airports.slice().sort((p, q) => kmBetween(p, view) - kmBetween(q, view)).slice(0, 10)
+  if (!pool.length) return
+  const i = pool.findIndex(a => a.icao === selAirport)
+  selAirport = pool[(i + 1) % pool.length].icao
+  if (airportMode) { const ap = airportByIcao(selAirport); view = { lat: ap.lat, lon: ap.lon } }
+  console.log('Airport:', selAirport)
+  refreshCenterNow()
+}
+function toggleAirportMode() {
+  const ap = airportByIcao(selAirport)
+  airportMode = !airportMode && !!ap
+  selectedHex = null; lastSelected = null; follow = false
+  if (airportMode) { view = { lat: ap.lat, lon: ap.lon }; rangeIdx = Math.max(0, RANGES.indexOf(25)) }
+  else view = { lat: cfg.lat, lon: cfg.lon }
   refreshCenterNow()
 }
 
@@ -750,6 +958,8 @@ async function main() {
       safe(() => device.setBrightness(brightness))
       lastSig.center = lastSig.left = lastSig.right = ''; refreshCenterNow()
     }
+    else if (id === 1) nextAirport()          // button 2: next airport
+    else if (id === 2) toggleAirportMode()    // button 3: airport mode
     else if (id === 7) { ackUntil = Date.now() + 5 * 60000; alertLevel = null }   // acknowledge alerts for 5 min
     else if (id === 'knobCT') cycleSelection()
     else if (id === 'knobTL') { minAltFt = 0; refreshCenterNow() }
@@ -761,7 +971,7 @@ async function main() {
     else if (id === 'b') pan(0, 1)
     else if (id === 'c') pan(-1, 0)
     else if (id === 'd') pan(1, 0)
-    else if (id === 'e' || id === 'home') { follow = false; view = { lat: cfg.lat, lon: cfg.lon }; selectedHex = null; lastSelected = null; refreshCenterNow() }
+    else if (id === 'e' || id === 'home') { follow = false; airportMode = false; view = { lat: cfg.lat, lon: cfg.lon }; selectedHex = null; lastSelected = null; refreshCenterNow() }
   })
   device.on('touchstart', ({ changedTouches }) => {
     const t = changedTouches[0]
@@ -776,6 +986,7 @@ async function main() {
   })
 
   buildAllMaps()
+  await loadAirports().catch(e => console.error('Airports:', e.message))
   await poll()
   setInterval(poll, cfg.poll_ms)
   setInterval(render, 1000 / cfg.fps)
@@ -783,7 +994,7 @@ async function main() {
 }
 
 process.on('SIGINT', async () => { try { await device?.close() } catch {} process.exit(0) })
-if (DEMO) import('./tools/render-screenshots.js').then(m => m.render({ setAircraft: list => { aircraft = list }, setState, drawRadar, drawCenter, drawSide, leftCells, rightCells, knobCanvas, centerCanvas, sideCanvas, drawMap, infoCache, trails, cfg, toRad }))
+if (DEMO) import('./tools/render-screenshots.js').then(async m => { await loadAirports().catch(e => console.error('Airports:', e.message)); return m.render({ setAircraft: list => { aircraft = list }, setState, drawRadar, drawCenter, drawSide, leftCells, rightCells, knobCanvas, centerCanvas, sideCanvas, drawMap, infoCache, trails, cfg, toRad, approachOf }) })
 else main().catch(e => { console.error('Error:', e.message); process.exit(1) })
 
 // State setter used by the screenshot tool
@@ -796,4 +1007,6 @@ function setState(st) {
   if ('spotIdx' in st) { spotIdx = st.spotIdx; spotAt = Date.now() }
   if ('blink' in st) blink = st.blink
   if ('view' in st) view = st.view
+  if ('selAirport' in st) selAirport = st.selAirport
+  if ('airportMode' in st) airportMode = st.airportMode
 }

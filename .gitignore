@@ -5,3 +5,4 @@ tiles/
 *.log
 radar-log.txt
 setup-log.txt
+airports-cache.json

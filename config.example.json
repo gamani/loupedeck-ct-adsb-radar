@@ -60,5 +60,16 @@
       }
     ]
   },
-  "debug": false
+  "debug": false,
+  "airports": {
+    "enabled": true,
+    "radius_km": 350,
+    "types": [
+      "large_airport",
+      "medium_airport"
+    ],
+    "min_runway_ft": 3000,
+    "approach_km": 18,
+    "default": "EDDF"
+  }
 }

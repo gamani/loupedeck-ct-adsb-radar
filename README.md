@@ -23,6 +23,15 @@ The round wheel screen becomes a radar scope over a satellite map, the touch pan
 
 ![Detail card](docs/screenshots/detail.png)
 
+**Airports and ILS-like approaches**
+- Airports within your area are drawn on the radar, with their runways to scale when zoomed in (data: [OurAirports](https://ourairports.com), downloaded once and cached in `airports-cache.json`).
+- The selected airport shows the extended centreline of each runway (5 km ticks); the runway in use is highlighted when traffic is established on it.
+- Aircraft flying a final approach are detected from their position, track and altitude (aligned within 3°, on a 1.5 to 5° glide path): the list and the spotlight banner show e.g. `ILS 23 SXB · 8.2 km`.
+- In the detail card, an approach replaces heading / distance / squawk with a cockpit-style **deviation indicator** (localizer and glide slope needles), the runway, the distance to the threshold, the time to touchdown and the actual glide angle.
+- **Airport mode** centres the radar on the selected airport at 25 km and lists only its traffic (on approach, inbound or outbound).
+
+These deviations are computed from ADS-B data (position once per second, altitude in 25 ft steps, no pressure correction), not from the real ILS signal: they are indicative, not certified.
+
 **Alerts**
 - Button 8 blinks and the CT vibrates for emergencies (red), low military aircraft nearby (orange), and low aircraft / imminent overflight (yellow). The emergency aircraft is selected and followed automatically.
 - Optional push notification through Home Assistant.
@@ -48,14 +57,17 @@ The round wheel screen becomes a radar scope over a satellite map, the touch pan
 | Button | Action |
 |---|---|
 | Round button 1 | Night mode on / off |
+| Round button 2 | Select the next airport in view |
+| Round button 3 | Airport mode on / off |
 | Round button 8 | Alert indicator; press to acknowledge alerts for 5 minutes |
 | A / B / C / D (arrows) | Pan the map (stops following) |
 | E or Home (○) | Back to home, stop following |
 | Tap a tile | Open the aircraft card and follow it on the radar |
 | Tap "Back" | Back to the list, the radar returns home |
 | Tap an aircraft on the wheel | Select and follow it |
+| Tap an airport on the wheel | Select that airport |
 
-Round buttons 2 to 7 are free for your own ideas.
+Round buttons 4 to 7 are free for your own ideas.
 
 ## Requirements
 
@@ -88,6 +100,7 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 | `tar1090_url` | | Base URL of your tar1090 / dump1090 web interface |
 | `lat`, `lon` | | Home position |
 | `airport` | | `{ name, lat, lon, radius_km, below_ft }` for the airport filter |
+| `airports` | | `enabled`, `radius_km` (area loaded), `types` (OurAirports types), `min_runway_ft`, `approach_km` (centreline length), `default` (ICAO or IATA of the airport selected at start) |
 | `font` | `segoe` | `segoe`, `bahnschrift` (condensed, DIN-like) or `arial` |
 | `ranges_km`, `default_range_km` | 10 to 300, 100 | Radar ranges |
 | `fps` | `1` | Wheel refresh rate. The CT wheel screen drops frames when flooded; 1 is safe, 2 may work |
@@ -120,6 +133,7 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 - [foxxyz/loupedeck](https://github.com/foxxyz/loupedeck): unofficial Loupedeck Node.js API
 - [tar1090](https://github.com/wiedehopf/tar1090): altitude colour scale and military address ranges inspiration
 - [adsb.lol](https://adsb.lol): route data
+- [OurAirports](https://ourairports.com): airport and runway data (public domain)
 - [adsbdb.com](https://www.adsbdb.com): aircraft, airline and fallback route data
 - Map imagery: Esri World Imagery and World Boundaries and Places (Esri, Maxar, Earthstar Geographics and the GIS User Community). Check Esri's terms of use for your use case.
 
