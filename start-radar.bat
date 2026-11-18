@@ -13,5 +13,11 @@ taskkill /IM Loupedeck.exe /F >nul 2>&1
 taskkill /IM LogiPluginServiceExt.exe /F >nul 2>&1
 taskkill /IM LogiPluginService.exe /F >nul 2>&1
 timeout /t 3 >nul
+rem Older canvas versions leak memory: update the dependencies once if needed
+node --input-type=commonjs -e "process.exit(+JSON.parse(require('fs').readFileSync('node_modules/@napi-rs/canvas/package.json')).version.split('.')[0]>=1?0:1)" >nul 2>&1
+if errorlevel 1 (
+  echo Updating dependencies, one moment...
+  call npm install --no-fund --no-audit
+)
 node radar.js 2>&1 | powershell -NoProfile -Command "$input | Tee-Object -FilePath radar-log.txt"
 pause

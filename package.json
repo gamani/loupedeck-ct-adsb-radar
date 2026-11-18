@@ -1,18 +1,28 @@
 {
   "name": "loupedeck-ct-adsb-radar",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Turn a Loupedeck CT into a live ADS-B aircraft radar fed by tar1090 / dump1090",
   "type": "module",
   "private": true,
   "license": "MIT",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node radar.js",
     "screenshots": "node tools/render-screenshots.js"
   },
   "dependencies": {
-    "@napi-rs/canvas": "^0.1.65",
+    "@napi-rs/canvas": "^1.1.1",
     "loupedeck": "^7.0.0"
   },
-  "keywords": ["loupedeck", "loupedeck-ct", "ads-b", "tar1090", "dump1090", "radar", "aviation"]
+  "keywords": [
+    "loupedeck",
+    "loupedeck-ct",
+    "ads-b",
+    "tar1090",
+    "dump1090",
+    "radar",
+    "aviation"
+  ]
 }

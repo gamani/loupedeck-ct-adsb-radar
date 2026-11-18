@@ -359,8 +359,9 @@ const regCountry = hex => { const h = parseInt(hex, 16); return (ICAO_COUNTRIES.
 const INFO_FILE = new URL('./infos-cache.json', import.meta.url)
 let infoCache = {}
 try { infoCache = JSON.parse(readFileSync(INFO_FILE)) } catch {}
-for (const k of Object.keys(infoCache)) if (infoCache[k].v !== 2) delete infoCache[k] // drop entries from older versions (routes without position check)
+const pruneInfo = () => { const old = Date.now() - 3 * 86400000; for (const k of Object.keys(infoCache)) if (infoCache[k].v !== 2 || !(infoCache[k].at > old)) { delete infoCache[k]; infoDirty = true } }
 let infoDirty = false
+pruneInfo() // drop entries from older versions and aircraft not seen for 3 days
 const infoKey = a => `${a.hex}|${a.flight}`
 const getInfo = a => infoCache[infoKey(a)]
 const infoQueue = []
@@ -412,7 +413,7 @@ async function processInfoQueue() {
     infoCache[infoKey(a)] = info; infoDirty = true
     if (a.hex === selectedHex || tileHexes.includes(a.hex)) refreshCenterNow()
   } catch (e) {
-    infoCache[infoKey(a)] = { at: Date.now() - 1.5 * 3600000 } // retry in 30 min
+    infoCache[infoKey(a)] = { at: Date.now() - 1.5 * 3600000, v: 2 } // retry in 30 min
     if (cfg.debug) console.error('Info lookup:', e.message)
   }
 }
@@ -470,9 +471,10 @@ function tileImg(url, z, x, y) {
   }
   return undefined
 }
+// Draws straight into the target context: copying one canvas onto another every frame is avoided on purpose
+// (it used to leak a full snapshot per frame with older @napi-rs/canvas versions).
 const mapCanvas = createCanvas(240, 240)
-function drawMap(idx = rangeIdx, center = view) {
-  const g = mapCanvas.getContext('2d')
+function drawMap(idx = rangeIdx, center = view, g = mapCanvas.getContext('2d')) {
   g.globalAlpha = 1; g.fillStyle = '#000'; g.fillRect(0, 0, 240, 240)
   if (!MAP.enabled) return { canvas: mapCanvas, complete: true }
   const K = pxPerZ0(RANGES[idx])
@@ -499,7 +501,7 @@ function drawMap(idx = rangeIdx, center = view) {
     g.putImageData(im, 0, 0)
   }
   if (mapBright < 1) { g.fillStyle = `rgba(0,0,0,${1 - mapBright})`; g.fillRect(0, 0, 240, 240) }
-  return { canvas: mapCanvas, complete }
+  return { complete }
 }
 // Preload the home tiles for every range
 async function buildAllMaps() {
@@ -621,7 +623,7 @@ function spotlightTarget(list) {
 function drawRadar() {
   const g = knobCanvas.getContext('2d')
   const range = RANGES[rangeIdx]
-  g.drawImage(drawMap().canvas, 0, 0)
+  drawMap(rangeIdx, view, g)
 
   // Vignette: keeps the centre bright and lets the bezel read as an instrument
   const vg = g.createRadialGradient(C, C, 45, C, C, 120)
@@ -1304,6 +1306,11 @@ async function main() {
   setInterval(poll, cfg.poll_ms)
   setInterval(() => render({ wheel: Date.now() - lastWheelAt >= INPUT_MS * 0.8 }), 1000 / (cfg.fps ?? 1))
   setInterval(inputLoop, 60)
+  setInterval(() => { // hourly housekeeping + memory report
+    pruneInfo()
+    for (const [hex, t] of alerted) if (Date.now() - t > 3600000) alerted.delete(hex)
+    console.log(`Memory: ${Math.round(process.memoryUsage().rss / 1048576)} MB`)
+  }, 3600000)
   console.log('Radar running. Ctrl+C to quit.')
 }
 
