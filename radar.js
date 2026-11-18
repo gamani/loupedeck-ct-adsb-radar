@@ -422,10 +422,12 @@ if (!DEMO) setInterval(() => { if (infoDirty) { infoDirty = false; try { writeFi
 const countryOf = a => getInfo(a)?.airline?.iso || getInfo(a)?.aircraft?.country || regCountry(a.hex)
 
 // ---------- RGB565 conversion ----------
+const rgbBuffers = new Map() // one reusable output buffer per canvas (the device library copies it before sending)
 function toRGB565(canvas, bigEndian) {
   const { width, height } = canvas
   const px = canvas.getContext('2d').getImageData(0, 0, width, height).data
-  const buf = Buffer.alloc(width * height * 2)
+  let buf = rgbBuffers.get(canvas)
+  if (!buf) rgbBuffers.set(canvas, buf = Buffer.alloc(width * height * 2))
   for (let i = 0, o = 0; i < px.length; i += 4, o += 2) {
     let r = px[i], gg = px[i + 1], b = px[i + 2]
     if (night) { const l = Math.min(255, 0.35 * r + 0.55 * gg + 0.25 * b); r = l; gg = l * 0.12; b = l * 0.04 } // night mode: everything in red
@@ -1142,7 +1144,10 @@ function updateLeds() {
 // (and once per tick otherwise). The touch panel and side strips answer inputs immediately.
 const INPUT_MS = cfg.input_refresh_ms ?? 500
 const SWEEP_DPS = (cfg.sweep_deg_per_frame ?? 30) * (cfg.fps ?? 1)
-const withTimeout = (p, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`screen timeout: ${what}`)), 3000))])
+const withTimeout = (p, what) => {
+  let timer
+  return Promise.race([p, new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`screen timeout: ${what}`)), 3000) })]).finally(() => clearTimeout(timer))
+}
 const lastSig = { center: '', left: '', right: '' }
 let lastCenterAt = 0, lastWheelAt = 0, forceCenter = false, pending = false, wheelDue = false
 function centerSig() {
@@ -1306,11 +1311,14 @@ async function main() {
   setInterval(poll, cfg.poll_ms)
   setInterval(() => render({ wheel: Date.now() - lastWheelAt >= INPUT_MS * 0.8 }), 1000 / (cfg.fps ?? 1))
   setInterval(inputLoop, 60)
-  setInterval(() => { // hourly housekeeping + memory report
+  const MB = n => Math.round(n / 1048576)
+  setInterval(() => global.gc?.(), 60000) // with --expose-gc: release the per-frame pixel buffers promptly
+  setInterval(() => { // housekeeping + memory report every 10 minutes
     pruneInfo()
     for (const [hex, t] of alerted) if (Date.now() - t > 3600000) alerted.delete(hex)
-    console.log(`Memory: ${Math.round(process.memoryUsage().rss / 1048576)} MB`)
-  }, 3600000)
+    const m = process.memoryUsage()
+    console.log(`Memory: ${MB(m.rss)} MB (heap ${MB(m.heapUsed)}, buffers ${MB(m.external)}, tiles ${memTiles.size}, trails ${trails.size}) at ${new Date().toTimeString().slice(0, 5)}`)
+  }, 600000)
   console.log('Radar running. Ctrl+C to quit.')
 }
 

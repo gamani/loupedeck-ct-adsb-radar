@@ -19,5 +19,5 @@ if errorlevel 1 (
   echo Updating dependencies, one moment...
   call npm install --no-fund --no-audit
 )
-node radar.js 2>&1 | powershell -NoProfile -Command "$input | Tee-Object -FilePath radar-log.txt"
+node --expose-gc radar.js 2>&1 | powershell -NoProfile -Command "$input | Tee-Object -FilePath radar-log.txt"
 pause
