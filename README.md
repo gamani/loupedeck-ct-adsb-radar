@@ -18,8 +18,8 @@ The round wheel screen becomes a radar scope over a satellite map, the touch pan
 - **Distress ring**: aircraft squawking 7500 / 7600 / 7700 get a pulsing red ring and take over the banner.
 
 **Touch panel (12 keys)**
-- **List**: the 12 nearest aircraft, one per key: callsign, flight level with climb / descent marker, route (or ILS runway), distance, country.
-- **Detail card**: tap an aircraft and the 12 keys become its card: from / to, type and registration, altitude, speed, vertical speed, heading dial, distance, squawk, airline.
+- **List**: the 12 nearest aircraft, one per key: callsign, flight level with climb / descent marker, route (or ILS runway), distance, airline logo (country code when there is none).
+- **Detail card**: tap an aircraft and the 12 keys become its card: from / to, type and registration, altitude, speed, vertical speed, heading dial, distance, squawk, airline with its logo.
 - **Airport picker**: button 2 lists the airports around you, 10 per page (airports with scheduled flights first, nearest first), with their runways, distance and a live traffic badge: aircraft on final (with the next landing and its time to touchdown), arrivals and departures. Tap one to jump to it.
 
 ![Detail card](docs/screenshots/detail.png)
@@ -111,6 +111,7 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 | `lat`, `lon` | | Home position |
 | `airport` | | `{ name, lat, lon, radius_km, below_ft }` for the airport filter |
 | `airports` | | `enabled`, `radius_km` (area loaded), `types` (OurAirports types), `min_runway_ft`, `approach_km` (centreline length), `mode_range_km` (range used by airport mode), `default` (ICAO or IATA of the airport selected at start) |
+| `logos` | | `enabled` (default `true`), `urls` (list of URL templates with `{icao}`, tried in order) for the airline logos |
 | `font` | `segoe` | `segoe`, `bahnschrift` (condensed, DIN-like) or `arial` |
 | `ranges_km`, `default_range_km` | 10 to 300, 100 | Radar ranges |
 | `fps` | `1` | Wheel refresh rate. The CT wheel screen drops frames when flooded; 1 is safe, 2 may work |
@@ -134,6 +135,7 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 - Callsigns get reused, so a database route can be wrong for today's flight. What the aircraft does wins: when it is established on final at an airport far from the declared destination, that airport replaces it (shown as *observed* in the detail view) for the rest of the flight; the same goes for a take-off far from the declared origin. A low descent or climb far from the declared airport shows `?` until the real one is known.
 - Military detection is a heuristic based on known ICAO address blocks and callsign prefixes.
 - Overflight prediction assumes straight-line flight, so turning or approaching aircraft may deviate.
+- Airline logos: the airline is read from the callsign (its first three letters are the ICAO airline code). Each logo is shown as a round badge, downloaded once from [Jxck-S/airline-logos](https://github.com/Jxck-S/airline-logos) and cached in `logos/`. No logo is shipped with this project, and the demo screenshots are rendered without them. Set `logos.enabled` to `false` to turn them off.
 - Map tiles are cached in `tiles/`.
 
 ## Screenshots
@@ -147,6 +149,7 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 - [adsb.lol](https://adsb.lol): route data
 - [OurAirports](https://ourairports.com): airport and runway data (public domain)
 - [adsbdb.com](https://www.adsbdb.com): aircraft, airline and fallback route data
+- [Jxck-S/airline-logos](https://github.com/Jxck-S/airline-logos): airline logos, downloaded on demand. Logos are trademarks of their respective airlines and are used for identification only.
 - Map imagery: Esri World Imagery and World Boundaries and Places (Esri, Maxar, Earthstar Geographics and the GIS User Community). Check Esri's terms of use for your use case.
 
 This project is not affiliated with Loupedeck or Logitech.

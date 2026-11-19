@@ -61,6 +61,9 @@
     ]
   },
   "debug": false,
+  "logos": {
+    "enabled": true
+  },
   "airports": {
     "enabled": true,
     "radius_km": 350,

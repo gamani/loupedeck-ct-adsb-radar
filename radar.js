@@ -5,7 +5,7 @@
 //   Side strips   : current value of each side knob
 import { discover } from 'loupedeck'
 import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas'
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 
 const DEMO = process.argv.includes('--screenshots') // render README screenshots with demo data, no device needed
@@ -448,6 +448,80 @@ function routeOf(a) {
   return from === r.from && to === r.to ? r : { from, to }
 }
 
+// ---------- Airline logos ----------
+// The airline is read from the callsign (first three letters = ICAO airline code). Each logo is downloaded once,
+// kept in logos/ (never shipped with the code) and shown as a round badge.
+const LOGOS = Object.assign({ enabled: true, urls: [
+  'https://raw.githubusercontent.com/Jxck-S/airline-logos/main/flightaware_logos/{icao}.png',
+  'https://raw.githubusercontent.com/Jxck-S/airline-logos/main/radarbox_logos/{icao}.png',
+] }, cfg.logos || {})
+const LOGO_DIR = new URL('./logos/', import.meta.url)
+const logoImgs = new Map() // ICAO code -> { img, bg, r }, or null while loading / when there is none
+const logoQueue = []
+let logoBusy = false
+const airlineCode = a => /^[A-Z]{3}\d/.test(a.flight || '') ? a.flight.slice(0, 3) : null
+function logoOf(a) {
+  if (!LOGOS.enabled || DEMO) return null
+  const code = airlineCode(a)
+  if (!code) return null
+  if (!logoImgs.has(code)) { logoImgs.set(code, null); logoQueue.push(code); loadLogos() }
+  return logoImgs.get(code)
+}
+async function loadLogos() {
+  if (logoBusy) return
+  logoBusy = true
+  while (logoQueue.length) {
+    const code = logoQueue.shift(), file = new URL(`${code}.png`, LOGO_DIR)
+    try {
+      let buf = null
+      if (existsSync(file)) {
+        const st = statSync(file)
+        if (st.size) buf = readFileSync(file)
+        else if (Date.now() - st.mtimeMs < 30 * 86400000) continue // empty file: no logo for this code, asked again after 30 days
+      }
+      if (!buf) {
+        for (const u of LOGOS.urls) {
+          const r = await fetch(u.replace('{icao}', code), { signal: AbortSignal.timeout(8000) })
+          if (r.ok) { buf = Buffer.from(await r.arrayBuffer()); break }
+          if (r.status !== 404) throw new Error(`HTTP ${r.status}`)
+        }
+        mkdirSync(LOGO_DIR, { recursive: true })
+        writeFileSync(file, buf || Buffer.alloc(0))
+      }
+      if (buf) { logoImgs.set(code, measureLogo(await loadImage(buf))); refreshCenterNow() }
+    } catch (e) {
+      setTimeout(() => logoImgs.delete(code), 600000).unref() // network trouble or unreadable file: try again in 10 minutes
+      if (cfg.debug) console.error(`Logo ${code}:`, e.message)
+    }
+  }
+  logoBusy = false
+}
+// How a logo fills its round badge. A logo with its own solid background keeps that colour for the whole disc;
+// a logo on a transparent background gets a white disc (what it was drawn for) and is scaled so that its
+// outermost pixel touches the rim: a round logo fills the badge completely.
+function measureLogo(img) {
+  const w = img.width, h = img.height, c = createCanvas(w, h), cg = c.getContext('2d')
+  cg.drawImage(img, 0, 0)
+  const d = cg.getImageData(0, 0, w, h).data
+  const at = (fx, fy) => { const i = (Math.round(fy * (h - 1)) * w + Math.round(fx * (w - 1))) * 4; return [d[i], d[i + 1], d[i + 2], d[i + 3]] }
+  const pts = [at(0.1, 0.1), at(0.9, 0.1), at(0.1, 0.9), at(0.9, 0.9)]
+  if (pts.every(q => q[3] > 200 && Math.abs(q[0] - pts[0][0]) + Math.abs(q[1] - pts[0][1]) + Math.abs(q[2] - pts[0][2]) < 60))
+    return { img, bg: `rgb(${pts[0][0]},${pts[0][1]},${pts[0][2]})`, r: Math.max(w, h) * 0.58 }
+  let r2 = 0
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (d[(y * w + x) * 4 + 3] > 40) r2 = Math.max(r2, (x + 0.5 - w / 2) ** 2 + (y + 0.5 - h / 2) ** 2)
+  return { img, bg: '#fff', r: Math.max(Math.sqrt(r2), Math.max(w, h) * 0.3) }
+}
+function drawLogo(g, logo, x, y, size) {
+  const { img, bg, r } = logo, cx = x + size / 2, cy = y + size / 2, k = (size / 2) / r
+  g.save()
+  if (night) g.globalAlpha = 0.6 // a bright disc would glare in night mode
+  g.beginPath(); g.arc(cx, cy, size / 2, 0, Math.PI * 2); g.fillStyle = bg; g.fill(); g.clip()
+  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high'
+  g.drawImage(img, cx - img.width * k / 2, cy - img.height * k / 2, img.width * k, img.height * k)
+  g.restore()
+  g.strokeStyle = 'rgba(255,255,255,0.2)'; g.lineWidth = 1; g.beginPath(); g.arc(cx, cy, size / 2 - 0.5, 0, Math.PI * 2); g.stroke() // hairline so dark logos stand out from the tile
+}
+
 // ---------- RGB565 conversion ----------
 const rgbBuffers = new Map() // one reusable output buffer per canvas (the device library copies it before sending)
 function toRGB565(canvas, bigEndian) {
@@ -887,28 +961,29 @@ const fmtKm = d => `${d < 10 ? d.toFixed(1) : Math.round(d)} km`
 function drawAircraftTile(g, i, a, refPoint) {
   const emerg = isEmergency(a.squawk), col = altColor(a.alt), app = approachOf(a), info = getInfo(a), route = routeOf(a)
   const b = panel(g, i, { accent: emerg ? UI.red : col, fill: emerg ? UI.panelWarn : UI.panel, border: emerg ? UI.red : UI.line, bw: emerg ? 2 : 1 })
-  txt(g, a.flight || a.hex.toUpperCase(), b.l, b.y + 20, { px: 14, weight: 700, max: b.r - b.l })
+  txt(g, a.flight || a.hex.toUpperCase(), b.l, b.y + 18, { px: 14, weight: 700, max: b.r - b.l })
   // flight level, vertical trend, heading
   let x = b.l
-  if (!a.ground && a.alt != null) x += txt(g, 'FL', x, b.y + 43, { px: 8, weight: 700, color: UI.mute }) + 2
-  x += txt(g, flText(a), x, b.y + 43, { px: 19, weight: 700, color: col }) + 5
+  if (!a.ground && a.alt != null) x += txt(g, 'FL', x, b.y + 40, { px: 8, weight: 700, color: UI.mute }) + 2
+  x += txt(g, flText(a), x, b.y + 40, { px: 19, weight: 700, color: col }) + 5
   if (Math.abs(a.vrate ?? 0) > 300) { // climbing / descending
-    const up = a.vrate > 0, ty = b.y + 36
+    const up = a.vrate > 0, ty = b.y + 33
     g.fillStyle = col; g.beginPath()
     if (up) { g.moveTo(x, ty + 4); g.lineTo(x + 4, ty - 3); g.lineTo(x + 8, ty + 4) } else { g.moveTo(x, ty - 3); g.lineTo(x + 4, ty + 4); g.lineTo(x + 8, ty - 3) }
     g.closePath(); g.fill()
   }
   // what it is doing: distress, approach, route or type
-  if (emerg) pill(g, `SQK ${a.squawk}`, b.l, b.y + 59, { fg: '#fff', bg: UI.red })
-  else if (app) pill(g, `ILS ${app.end.id} ${app.ap.iata || app.ap.icao}`, b.l, b.y + 59, { fg: UI.cyan, bg: '#0a3440' })
-  else if (route) txt(g, `${route.from.iata} › ${route.to.iata}`, b.l, b.y + 59, { px: 12, weight: 600, color: '#d5e0e8', max: b.r - b.l })
-  else if (info?.aircraft?.type) txt(g, info.aircraft.type, b.l, b.y + 59, { px: 11, weight: 600, color: UI.mute })
+  if (emerg) pill(g, `SQK ${a.squawk}`, b.l, b.y + 53, { fg: '#fff', bg: UI.red })
+  else if (app) pill(g, `ILS ${app.end.id} ${app.ap.iata || app.ap.icao}`, b.l, b.y + 53, { fg: UI.cyan, bg: '#0a3440' })
+  else if (route) txt(g, `${route.from.iata} › ${route.to.iata}`, b.l, b.y + 53, { px: 12, weight: 600, color: '#d5e0e8', max: b.r - b.l })
+  else if (info?.aircraft?.type) txt(g, info.aircraft.type, b.l, b.y + 53, { px: 11, weight: 600, color: UI.mute })
   // distance, country
   const ref = refPoint ? kmBetween(a, refPoint) : a.d
-  txt(g, fmtKm(ref), b.l, b.y + 75, { px: 10, weight: 600, color: UI.sub })
-  const mil = isMilitary(a)
-  txt(g, mil ? T.mil : countryOf(a), b.r - 12, b.y + 75, { px: 9, weight: 700, color: mil ? '#8fe05a' : UI.mute, align: 'right' })
-  glyph(g, { track: a.track, category: 'A3' }, b.r - 4, b.y + 71, { color: UI.sub, outline: null, scale: 0.6 })
+  txt(g, fmtKm(ref), b.l, b.y + 71, { px: 10, weight: 600, color: UI.sub })
+  const mil = isMilitary(a), logo = logoOf(a)
+  if (logo) return drawLogo(g, logo, b.r - 21, b.y + 57, 22) // the airline logo replaces the country code
+  txt(g, mil ? T.mil : countryOf(a), b.r - 12, b.y + 71, { px: 9, weight: 700, color: mil ? '#8fe05a' : UI.mute, align: 'right' })
+  glyph(g, { track: a.track, category: 'A3' }, b.r - 4, b.y + 67, { color: UI.sub, outline: null, scale: 0.6 })
 }
 
 function drawInfoTile(g, i, label, value, { color = UI.text, sub = '', sub2 = '', px = 21, fill, border } = {}) {
@@ -986,6 +1061,8 @@ function drawDetail(g, sel) {
   if (isMilitary(sel)) cx += pill(g, T.mil, cx, b.y + 57, { fg: '#b8f58a', bg: '#1f3a12' }) + 3
   if (emerg) pill(g, sel.squawk, cx, b.y + 57, { fg: '#fff', bg: UI.red })
   txt(g, sel.hex.toUpperCase(), b.l, b.y + 74, { px: 9, weight: 600, color: UI.mute })
+  const logo = logoOf(sel)
+  if (logo) drawLogo(g, logo, b.r - 24, b.y + 53, 26)
 
   drawInfoTile(g, 1, T.from, r ? r.from.iata : '–', { color: r ? UI.text : UI.mute, sub: r ? r.from.city : T.unknown, sub2: r?.from.obs ? (r.from.iata === '?' ? '' : T.seen) : r?.from.iso })
   drawInfoTile(g, 2, T.to, r ? r.to.iata : '–', { color: r ? UI.text : UI.mute, sub: r ? r.to.city : T.unknown, sub2: r?.to.obs ? (r.to.iata === '?' ? '' : T.seen) : r?.to.iso })
@@ -1003,7 +1080,14 @@ function drawDetail(g, sel) {
   } else {
     drawInfoTile(g, 8, T.dist, sel.d.toFixed(1), { sub: 'km', sub2: T.brgAt(Math.round(sel.brg)) })
     drawInfoTile(g, 9, T.squawk, sel.squawk || '––––', { color: emerg ? UI.red : UI.text })
-    drawInfoTile(g, 10, T.airline, al?.iata || al?.name || '–', { color: al ? UI.text : UI.mute, sub: al?.iata ? al.name : '', sub2: al?.iso })
+    if (logo) { // airline tile with its logo
+      const t = panel(g, 10)
+      txt(g, T.airline, t.l, t.y + 16, { px: 9, weight: 700, color: UI.mute, max: t.r - t.l })
+      drawLogo(g, logo, t.l, t.y + 23, 36)
+      txt(g, al?.iata || airlineCode(sel), t.l + 42, t.y + 40, { px: 15, weight: 700, max: t.r - t.l - 42 })
+      txt(g, al?.iso || countryOf(sel), t.l + 42, t.y + 54, { px: 9, weight: 700, color: UI.mute })
+      txt(g, al?.name || '', t.l, t.y + 74, { px: 10, weight: 600, color: UI.sub, max: t.r - t.l })
+    } else drawInfoTile(g, 10, T.airline, al?.iata || al?.name || '–', { color: al ? UI.text : UI.mute, sub: al?.iata ? al.name : '', sub2: al?.iso })
   }
   drawNavTile(g, 11, 'back', T.back, { color: UI.green })
 }
