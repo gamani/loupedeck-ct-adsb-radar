@@ -21,13 +21,13 @@ if (DEMO) cfg.language = process.argv.includes('--fr') ? 'fr' : 'en'
 const STRINGS = {
   en: { filters: ['ALL', 'MILITARY', 'HELICOPTERS', 'LOW ALT.', 'AIRPORT', 'HEAVIES', 'OVERHEAD'], follow: 'FOLLOW', ground: 'GND', mil: 'MIL',
     from: 'FROM', to: 'TO', airline: 'AIRLINE', alt: 'ALT', spd: 'SPD', vs: 'V/S', type: 'TYPE', hdg: 'HDG', dist: 'DIST', squawk: 'SQUAWK',
-    back: 'Back', close: 'Close', next: 'Next', unknown: 'unknown', noAircraft: r => `No aircraft within ${r} km`, noTraffic: 'No traffic for this airport yet',
+    back: 'Back', close: 'Close', next: 'Next', unknown: 'unknown', seen: 'observed', noAircraft: r => `No aircraft within ${r} km`, noTraffic: 'No traffic for this airport yet',
     brgAt: b => `bearing ${b}°`, altMin: 'MIN ALT', none: 'none', filter: 'FILTER', bright: 'SCREEN', labels: 'LABELS', trails: 'TRAILS', map: 'MAP',
     overflight: t => `Overhead ${t} min`, at: d => `${d} km`, locale: 'en-GB', eta: 'TOUCHDOWN', slope: 'glide', rwy: 'RWY',
     traffic: n => `${n} aircraft`, airports: 'Airports' },
   fr: { filters: ['TOUS', 'MILITAIRES', 'HELICOS', 'BASSE ALT.', 'AEROPORT', 'GROS PORTEURS', 'AU-DESSUS'], follow: 'SUIVI', ground: 'SOL', mil: 'MIL',
     from: 'DEPART', to: 'ARRIVEE', airline: 'COMPAGNIE', alt: 'ALT', spd: 'VIT', vs: 'V/S', type: 'TYPE', hdg: 'CAP', dist: 'DIST', squawk: 'SQUAWK',
-    back: 'Retour', close: 'Fermer', next: 'Suite', unknown: 'inconnu', noAircraft: r => `Aucun avion dans ${r} km`, noTraffic: 'Aucun trafic pour cet aéroport',
+    back: 'Retour', close: 'Fermer', next: 'Suite', unknown: 'inconnu', seen: 'observé', noAircraft: r => `Aucun avion dans ${r} km`, noTraffic: 'Aucun trafic pour cet aéroport',
     brgAt: b => `au ${b}°`, altMin: 'ALT MIN', none: 'aucun', filter: 'FILTRE', bright: 'ECRAN', labels: 'ETIQUETTES', trails: 'TRAINEES', map: 'CARTE',
     overflight: t => `Survol ${t} min`, at: d => `à ${d} km`, locale: 'fr-FR', eta: 'TOUCHER', slope: 'pente', rwy: 'PISTE',
     traffic: n => `${n} avion${n > 1 ? 's' : ''}`, airports: 'Aéroports' },
@@ -317,13 +317,13 @@ function airportLink(a) {
   const app = approachOf(a), vr = a.vrate ?? 0
   if (app) res = { ap: app.ap, kind: 'app' }
   else if (a.alt != null && !a.ground) {
-    const r = info?.route
+    const r = routeOf(a)
     if (r) {
-      const find = c => airports.find(p => (p.iata && p.iata === c) || p.icao === c)
-      const to = find(r.to.iata), from = find(r.from.iata)
+      const to = localAirport(r.to.iata), from = localAirport(r.from.iata)
       if (to && kmBetween(a, to) < 150 && (a.alt < 25000 || vr < -500)) res = { ap: to, kind: 'arr' }
       else if (from && kmBetween(a, from) < 150 && (a.alt < 25000 || vr > 500)) res = { ap: from, kind: 'dep' }
-    } else if (a.alt < 20000 && Math.abs(vr) > 500) {
+    }
+    if (!res && (!r || r.to.iata === '?' || r.from.iata === '?') && a.alt < 20000 && Math.abs(vr) > 500) {
       let best = null, bd = 60
       for (const p of airports) { if (!p.sched || Math.abs(p.lat - a.lat) > 0.6) continue; const d = kmBetween(a, p); if (d < bd) { bd = d; best = p } }
       if (best) res = { ap: best, kind: vr > 0 ? 'dep' : 'arr' }
@@ -420,6 +420,33 @@ async function processInfoQueue() {
 if (!DEMO) setInterval(processInfoQueue, 1200)
 if (!DEMO) setInterval(() => { if (infoDirty) { infoDirty = false; try { writeFileSync(INFO_FILE, JSON.stringify(infoCache)) } catch {} } }, 30000)
 const countryOf = a => getInfo(a)?.airline?.iso || getInfo(a)?.aircraft?.country || regCountry(a.hex)
+
+// Route to display. Callsigns get reused, so the route database can name an airport hundreds of kilometres away
+// while the aircraft is plainly landing or taking off here. What the aircraft does wins over the database:
+// an airport confirmed by the trajectory replaces the database one (kept for the rest of the flight),
+// and a low descent or climb far from the declared airport shows "?" until the real one is known.
+const localAirport = c => airports.find(p => (p.iata && p.iata === c) || p.icao === c)
+const seenEnd = ap => ({ iata: ap.iata || ap.icao, city: ap.city || ap.name, obs: true })
+const unknownEnd = () => ({ iata: '?', city: T.unknown, obs: true })
+const doubted = new Set() // "to|key" / "from|key": doubt raised, kept while the aircraft stays low (no flicker during level-offs)
+function routeOf(a) {
+  const r = getInfo(a)?.route
+  if (!r || !airports.length || a.alt == null || a.ground) return r || null
+  const far = end => { const p = localAirport(end.iata); return !p || kmBetween(a, p) > 150 }
+  const vr = a.vrate ?? 0, low = a.alt < 8000, kt = `to|${infoKey(a)}`, kf = `from|${infoKey(a)}`
+  if (!low) { doubted.delete(kt); doubted.delete(kf) }
+  let from = r.from, to = r.to
+  const app = approachOf(a)
+  if (app && localAirport(to.iata) !== app.ap && far(to)) { to = r.to = seenEnd(app.ap); infoDirty = true }
+  else if (low && !to.obs && far(to) && (vr < -400 || doubted.has(kt))) { to = unknownEnd(); doubted.add(kt) }
+  if (low && !from.obs && far(from) && (vr > 400 || doubted.has(kf))) {
+    let best = null, bd = 15
+    if (a.alt < 5000) for (const p of airports) { if (!p.sched || Math.abs(p.lat - a.lat) > 0.3) continue; const d = kmBetween(a, p); if (d < bd) { bd = d; best = p } }
+    if (best) { from = r.from = seenEnd(best); infoDirty = true } else { from = unknownEnd(); doubted.add(kf) }
+  }
+  if (doubted.size > 500) doubted.clear()
+  return from === r.from && to === r.to ? r : { from, to }
+}
 
 // ---------- RGB565 conversion ----------
 const rgbBuffers = new Map() // one reusable output buffer per canvas (the device library copies it before sending)
@@ -819,7 +846,7 @@ function drawAirports(g, occupied) {
 
 // Spotlight banner: one aircraft at a time, at the bottom of the scope
 function drawSpotlight(g, a, ov) {
-  const info = getInfo(a) || {}, emerg = isEmergency(a.squawk)
+  const info = getInfo(a) || {}, emerg = isEmergency(a.squawk), route = routeOf(a)
   const col = emerg ? UI.red : altColor(a.alt), app = !ov && approachOf(a)
   const { x: bx, y: by, w: bw, h: bh } = SPOT
   g.fillStyle = 'rgba(4,8,12,0.86)'; g.beginPath(); g.roundRect(bx, by, bw, bh, 10); g.fill()
@@ -833,7 +860,7 @@ function drawSpotlight(g, a, ov) {
   // line 2: what matters most right now
   const second = ov ? [T.overflight(ov.t < 1 ? '<1' : Math.round(ov.t)), UI.amber, T.at(ov.d.toFixed(1))]
     : app ? [`ILS ${app.end.id} ${app.ap.iata || app.ap.icao}`, UI.cyan, `${app.along.toFixed(1)} km`]
-    : [info.route ? `${info.route.from.iata} › ${info.route.to.iata}` : (info.aircraft?.type || `${Math.round(kmBetween(a, view))} km`), UI.sub, isMilitary(a) ? T.mil : countryOf(a)]
+    : [route ? `${route.from.iata} › ${route.to.iata}` : (info.aircraft?.type || `${Math.round(kmBetween(a, view))} km`), UI.sub, isMilitary(a) ? T.mil : countryOf(a)]
   const rw = txt(g, second[2], right, by + 28, { px: 9, weight: 700, color: ov || app ? second[1] : UI.mute, align: 'right' })
   txt(g, second[0], left, by + 28, { px: 10, weight: ov || app ? 700 : 600, color: second[1], max: right - left - rw - 6 })
   if (a.hex !== selectedHex) wantInfo(a, true)
@@ -858,7 +885,7 @@ const flText = a => a.ground ? T.ground : a.alt != null ? String(Math.round(a.al
 const fmtKm = d => `${d < 10 ? d.toFixed(1) : Math.round(d)} km`
 
 function drawAircraftTile(g, i, a, refPoint) {
-  const emerg = isEmergency(a.squawk), col = altColor(a.alt), app = approachOf(a), info = getInfo(a)
+  const emerg = isEmergency(a.squawk), col = altColor(a.alt), app = approachOf(a), info = getInfo(a), route = routeOf(a)
   const b = panel(g, i, { accent: emerg ? UI.red : col, fill: emerg ? UI.panelWarn : UI.panel, border: emerg ? UI.red : UI.line, bw: emerg ? 2 : 1 })
   txt(g, a.flight || a.hex.toUpperCase(), b.l, b.y + 20, { px: 14, weight: 700, max: b.r - b.l })
   // flight level, vertical trend, heading
@@ -874,7 +901,7 @@ function drawAircraftTile(g, i, a, refPoint) {
   // what it is doing: distress, approach, route or type
   if (emerg) pill(g, `SQK ${a.squawk}`, b.l, b.y + 59, { fg: '#fff', bg: UI.red })
   else if (app) pill(g, `ILS ${app.end.id} ${app.ap.iata || app.ap.icao}`, b.l, b.y + 59, { fg: UI.cyan, bg: '#0a3440' })
-  else if (info?.route) txt(g, `${info.route.from.iata} › ${info.route.to.iata}`, b.l, b.y + 59, { px: 12, weight: 600, color: '#d5e0e8', max: b.r - b.l })
+  else if (route) txt(g, `${route.from.iata} › ${route.to.iata}`, b.l, b.y + 59, { px: 12, weight: 600, color: '#d5e0e8', max: b.r - b.l })
   else if (info?.aircraft?.type) txt(g, info.aircraft.type, b.l, b.y + 59, { px: 11, weight: 600, color: UI.mute })
   // distance, country
   const ref = refPoint ? kmBetween(a, refPoint) : a.d
@@ -948,7 +975,7 @@ function drawIlsTile(g, i, app) {
 
 function drawDetail(g, sel) {
   const info = getInfo(sel) || {}, emerg = isEmergency(sel.squawk)
-  const col = altColor(sel.alt), r = info.route, al = info.airline, ac = info.aircraft
+  const col = altColor(sel.alt), r = routeOf(sel), al = info.airline, ac = info.aircraft
   // identity
   const b = panel(g, 0, { accent: emerg ? UI.red : col, fill: emerg ? UI.panelWarn : UI.panel, border: emerg ? UI.red : UI.line, bw: emerg ? 2 : 1 })
   txt(g, sel.flight || sel.hex.toUpperCase(), b.l, b.y + 23, { px: 16, weight: 700, max: b.r - b.l })
@@ -960,8 +987,8 @@ function drawDetail(g, sel) {
   if (emerg) pill(g, sel.squawk, cx, b.y + 57, { fg: '#fff', bg: UI.red })
   txt(g, sel.hex.toUpperCase(), b.l, b.y + 74, { px: 9, weight: 600, color: UI.mute })
 
-  drawInfoTile(g, 1, T.from, r ? r.from.iata : '–', { color: r ? UI.text : UI.mute, sub: r ? r.from.city : T.unknown, sub2: r?.from.iso })
-  drawInfoTile(g, 2, T.to, r ? r.to.iata : '–', { color: r ? UI.text : UI.mute, sub: r ? r.to.city : T.unknown, sub2: r?.to.iso })
+  drawInfoTile(g, 1, T.from, r ? r.from.iata : '–', { color: r ? UI.text : UI.mute, sub: r ? r.from.city : T.unknown, sub2: r?.from.obs ? (r.from.iata === '?' ? '' : T.seen) : r?.from.iso })
+  drawInfoTile(g, 2, T.to, r ? r.to.iata : '–', { color: r ? UI.text : UI.mute, sub: r ? r.to.city : T.unknown, sub2: r?.to.obs ? (r.to.iata === '?' ? '' : T.seen) : r?.to.iso })
   drawInfoTile(g, 3, T.type, ac?.type || '–', { color: ac?.type ? UI.text : UI.mute, sub: ac?.reg, sub2: ac?.model && ac.model !== ac.type ? ac.model : '' })
   drawInfoTile(g, 4, T.alt, sel.ground ? T.ground : sel.alt != null ? sel.alt.toLocaleString(T.locale) : '–', { color: col, sub: 'ft', sub2: sel.alt != null ? `${Math.round(sel.alt * 0.3048).toLocaleString(T.locale)} m` : '' })
   drawInfoTile(g, 5, T.spd, sel.speed != null ? String(Math.round(sel.speed * 1.852)) : '–', { sub: 'km/h', sub2: sel.speed != null ? `${Math.round(sel.speed)} kt` : '' })
@@ -1157,7 +1184,7 @@ function centerSig() {
     const app = approachOf(sel) // on approach the needles move, so their position is part of the signature
     return JSON.stringify([sel.hex, getInfo(sel)?.at, app && [app.end.id, Math.round(app.locDev * 20), Math.round(app.gsDev * 20), Math.round(app.along * 10)], sel.alt, sel.speed, sel.vrate, Math.round(sel.d * 10), sel.track, sel.squawk])
   }
-  return JSON.stringify([airportMode, selAirport, rangeIdx, minAltFt, filterIdx, currentList().slice(0, 12).map(a => [a.hex, !!getInfo(a)?.route, countryOf(a), approachOf(a)?.end.id, Math.round((a.alt ?? 0) / 100), Math.round(a.d), a.track, Math.sign(Math.round((a.vrate ?? 0) / 300)), a.squawk])])
+  return JSON.stringify([airportMode, selAirport, rangeIdx, minAltFt, filterIdx, currentList().slice(0, 12).map(a => [a.hex, routeOf(a)?.from.iata, routeOf(a)?.to.iata, countryOf(a), approachOf(a)?.end.id, Math.round((a.alt ?? 0) / 100), Math.round(a.d), a.track, Math.sign(Math.round((a.vrate ?? 0) / 300)), a.squawk])])
 }
 async function render({ wheel = true } = {}) {
   if (!device || busy) return

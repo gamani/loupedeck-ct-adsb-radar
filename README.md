@@ -131,6 +131,7 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 - Talks to the CT directly over USB serial with the excellent [`loupedeck`](https://github.com/foxxyz/loupedeck) Node.js library, and draws with [`@napi-rs/canvas`](https://github.com/Brooooooklyn/canvas).
 - Aircraft come from your receiver's `aircraft.json` (both the dump1090 and readsb formats are supported).
 - Routes come from the [adsb.lol](https://api.adsb.lol/docs) route API, which checks them against the aircraft position; airline and aircraft type come from the free [adsbdb.com](https://www.adsbdb.com) API (also a route fallback). At most one lookup per second, cached in `infos-cache.json`. Charter, private and military flights may still show no route.
+- Callsigns get reused, so a database route can be wrong for today's flight. What the aircraft does wins: when it is established on final at an airport far from the declared destination, that airport replaces it (shown as *observed* in the detail view) for the rest of the flight; the same goes for a take-off far from the declared origin. A low descent or climb far from the declared airport shows `?` until the real one is known.
 - Military detection is a heuristic based on known ICAO address blocks and callsign prefixes.
 - Overflight prediction assumes straight-line flight, so turning or approaching aircraft may deviate.
 - Map tiles are cached in `tiles/`.
