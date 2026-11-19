@@ -90,7 +90,7 @@ export async function render(api) {
     console.log('wrote docs/screenshots/' + name)
   }
 
-  const base = { rangeIdx: 2, sweep: 300, labelsMax: 5, spotIdx: 2, selectedHex: null, view: home, airportMode: false, picker: false, selAirport: ap?.icao }
+  const base = { rangeIdx: 2, sweep: 300, labelsMax: 5, spotIdx: 2, selectedHex: null, view: home, airportMode: false, picker: false, statsMode: false, selAirport: ap?.icao }
   setState(base)
   await shot('overview.png')
 
@@ -104,6 +104,18 @@ export async function render(api) {
     setState({ ...base, airportMode: true, rangeIdx: 1, view: { lat: ap.lat, lon: ap.lon }, selectedHex: FINALS[0].hex, follow: false })
     await shot('approach.png')
   }
+
+  if (ap) { // airport mode: traffic of the airport with its weather tile (fictitious METAR)
+    setState({ ...base, airportMode: true, rangeIdx: 1, view: { lat: ap.lat, lon: ap.lon } })
+    await shot('airport-weather.png')
+  }
+
+  // Reception statistics, with fictitious figures
+  const sectors = Array.from({ length: 36 }, (_, k) => Math.round(170 + 110 * Math.abs(Math.sin(k / 5)) - (k > 20 && k < 27 ? 120 : 0)))
+  setState({ ...base, rangeIdx: 5, statsMode: true, stats: { day: new Date().toISOString().slice(0, 10), seen: Array.from({ length: 1284 }, (_, i) => [String(i), '']), mil: 17,
+    airlines: { DLH: 143, RYR: 121, EWG: 96 }, range: { km: 318.4, brg: 244, name: 'IBE31KP', at: '11:42' }, high: { alt: 45000, name: 'NJE8XY' },
+    fast: { kt: 562, name: 'UAE45' }, peak: { n: 104, at: '12:40' }, sectors, record: { km: 402.7, day: '2026-01-12', name: 'TAP1024' }, msgRate: 1184 } })
+  await shot('stats.png')
 
   list.find(a => a.hex === '406d7b').squawk = '7700'
   setState({ ...base, blink: true })

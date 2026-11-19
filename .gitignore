@@ -7,3 +7,5 @@ logos/
 radar-log.txt
 setup-log.txt
 airports-cache*.json
+stats.json
+aircraft-db.csv.gz

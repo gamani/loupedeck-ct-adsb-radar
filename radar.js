@@ -5,8 +5,11 @@
 //   Side strips   : current value of each side knob
 import { discover } from 'loupedeck'
 import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas'
-import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, createReadStream } from 'node:fs'
+import { createGunzip } from 'node:zlib'
+import { createInterface } from 'node:readline'
 import { createHash } from 'node:crypto'
+import { execFile } from 'node:child_process'
 
 const DEMO = process.argv.includes('--screenshots') // render README screenshots with demo data, no device needed
 const CONFIG = new URL(DEMO ? './config.example.json' : './config.json', import.meta.url)
@@ -24,13 +27,17 @@ const STRINGS = {
     back: 'Back', close: 'Close', next: 'Next', unknown: 'unknown', seen: 'observed', noAircraft: r => `No aircraft within ${r} km`, noTraffic: 'No traffic for this airport yet',
     brgAt: b => `bearing ${b}°`, altMin: 'MIN ALT', none: 'none', filter: 'FILTER', bright: 'SCREEN', labels: 'LABELS', trails: 'TRAILS', map: 'MAP',
     overflight: t => `Overhead ${t} min`, at: d => `${d} km`, locale: 'en-GB', eta: 'TOUCHDOWN', slope: 'glide', rwy: 'RWY',
-    traffic: n => `${n} aircraft`, airports: 'Airports' },
+    traffic: n => `${n} aircraft`, airports: 'Airports', wind: 'WIND', calm: 'CALM', byWind: '(wind)', watch: 'WATCH',
+    stTitle: 'RECEPTION', today: 'today', stSeen: 'AIRCRAFT', stNow: 'IN VIEW', stPeak: n => `peak ${n}`, stMil: n => `${n} military`, stRange: 'MAX RANGE',
+    stRecord: 'RECORD', stHigh: 'HIGHEST', stFast: 'FASTEST', stCover: 'COVERAGE', stats: 'Stats' },
   fr: { filters: ['TOUS', 'MILITAIRES', 'HELICOS', 'BASSE ALT.', 'AEROPORT', 'GROS PORTEURS', 'AU-DESSUS'], follow: 'SUIVI', ground: 'SOL', mil: 'MIL',
     from: 'DEPART', to: 'ARRIVEE', airline: 'COMPAGNIE', alt: 'ALT', spd: 'VIT', vs: 'V/S', type: 'TYPE', hdg: 'CAP', dist: 'DIST', squawk: 'SQUAWK',
     back: 'Retour', close: 'Fermer', next: 'Suite', unknown: 'inconnu', seen: 'observé', noAircraft: r => `Aucun avion dans ${r} km`, noTraffic: 'Aucun trafic pour cet aéroport',
     brgAt: b => `au ${b}°`, altMin: 'ALT MIN', none: 'aucun', filter: 'FILTRE', bright: 'ECRAN', labels: 'ETIQUETTES', trails: 'TRAINEES', map: 'CARTE',
     overflight: t => `Survol ${t} min`, at: d => `à ${d} km`, locale: 'fr-FR', eta: 'TOUCHER', slope: 'pente', rwy: 'PISTE',
-    traffic: n => `${n} avion${n > 1 ? 's' : ''}`, airports: 'Aéroports' },
+    traffic: n => `${n} avion${n > 1 ? 's' : ''}`, airports: 'Aéroports', wind: 'VENT', calm: 'CALME', byWind: '(vent)', watch: 'SURVEILLE',
+    stTitle: 'RECEPTION', today: "aujourd'hui", stSeen: 'AVIONS', stNow: 'EN VUE', stPeak: n => `pic ${n}`, stMil: n => `${n} militaires`, stRange: 'PORTEE MAX',
+    stRecord: 'RECORD', stHigh: 'PLUS HAUT', stFast: 'PLUS RAPIDE', stCover: 'COUVERTURE', stats: 'Stats' },
 }
 const T = STRINGS[cfg.language] || STRINGS.en
 const RANGES = cfg.ranges_km
@@ -66,7 +73,7 @@ let mapBright = (cfg.map?.brightness ?? 0.75)
 let view = { lat: cfg.lat, lon: cfg.lon }   // view centre (can be panned with the arrow keys)
 const trails = new Map()                     // hex -> [{lat, lon, t}]
 const alerted = new Map()                    // hex -> last alert time
-let alertLevel = null                        // null | 'info' | 'warn' | 'emerg'
+let alertLevel = null                        // null | 'watch' | 'info' | 'warn' | 'emerg'
 let night = false, dayBrightness = 1
 let spotIdx = 0, spotAt = 0                  // spotlight banner on the wheel screen
 let picker = false, pickerPage = 0           // airport picker on the 12 tiles
@@ -131,6 +138,7 @@ async function poll() {
       })
       .sort((a, b) => a.d - b.d)
     const now = Date.now()
+    for (const a of aircraft) a.watch = watched(a)
     for (const a of aircraft) {
       if (a.seenPos > 15) continue
       const tr = trails.get(a.hex) || []
@@ -148,6 +156,7 @@ async function poll() {
     const ap = airportMode && airportByIcao(selAirport) // airport mode needs the routes of everything around the airport
     if (ap) aircraft.filter(a => kmBetween(a, ap) < 120).sort((p, q) => kmBetween(p, ap) - kmBetween(q, ap)).slice(0, 20).forEach(a => wantInfo(a))
     aircraft.filter(a => !getInfo(a) && airportLink(a)).slice(0, 8).forEach(a => wantInfo(a)) // confirm likely arrivals / departures with their route
+    updateStats(j)
     checkAlert()
   } catch (e) {
     console.error('tar1090 unreachable:', e.message)
@@ -456,14 +465,15 @@ const LOGOS = Object.assign({ enabled: true, urls: [
   'https://raw.githubusercontent.com/Jxck-S/airline-logos/main/radarbox_logos/{icao}.png',
 ] }, cfg.logos || {})
 const LOGO_DIR = new URL('./logos/', import.meta.url)
+const logged = new Set() // first success and first failure of each online feature go to the log, once
+const logOnce = (key, msg) => { if (!logged.has(key)) { logged.add(key); console.log(msg) } }
 const logoImgs = new Map() // ICAO code -> { img, bg, r }, or null while loading / when there is none
 const logoQueue = []
 let logoBusy = false
 const airlineCode = a => /^[A-Z]{3}\d/.test(a.flight || '') ? a.flight.slice(0, 3) : null
-function logoOf(a) {
-  if (!LOGOS.enabled || DEMO) return null
-  const code = airlineCode(a)
-  if (!code) return null
+const logoOf = a => logoByCode(airlineCode(a))
+function logoByCode(code) {
+  if (!LOGOS.enabled || DEMO || !code) return null
   if (!logoImgs.has(code)) { logoImgs.set(code, null); logoQueue.push(code); loadLogos() }
   return logoImgs.get(code)
 }
@@ -488,10 +498,10 @@ async function loadLogos() {
         mkdirSync(LOGO_DIR, { recursive: true })
         writeFileSync(file, buf || Buffer.alloc(0))
       }
-      if (buf) { logoImgs.set(code, measureLogo(await loadImage(buf))); refreshCenterNow() }
+      if (buf) { logoImgs.set(code, measureLogo(await loadImage(buf))); refreshCenterNow(); logOnce('logo', 'Airline logos: working') }
     } catch (e) {
       setTimeout(() => logoImgs.delete(code), 600000).unref() // network trouble or unreadable file: try again in 10 minutes
-      if (cfg.debug) console.error(`Logo ${code}:`, e.message)
+      logOnce('logo-err', `Airline logos: ${code} failed (${e.message})`)
     }
   }
   logoBusy = false
@@ -521,6 +531,173 @@ function drawLogo(g, logo, x, y, size) {
   g.restore()
   g.strokeStyle = 'rgba(255,255,255,0.2)'; g.lineWidth = 1; g.beginPath(); g.arc(cx, cy, size / 2 - 0.5, 0, Math.PI * 2); g.stroke() // hairline so dark logos stand out from the tile
 }
+
+// ---------- Aircraft photo (planespotters.net public API) ----------
+// Their terms: a descriptive User-Agent, the photographer credited next to the image, the image linked to its
+// Planespotters page (tapping the photo opens that page in the browser), the image fetched from the returned URL
+// and held in memory only while it is on screen, the JSON answer cached for 24 hours at most.
+const PHOTOS = Object.assign({ enabled: true }, cfg.photos || {})
+const UA = 'loupedeck-ct-adsb-radar (+https://github.com/gamani/loupedeck-ct-adsb-radar)'
+const photoMeta = new Map() // hex -> { at, src, credit, link }, or { at } when there is no photo
+let photoShown = null       // { hex, img, credit, link }: only the aircraft on screen
+let photoBusy = false
+function photoOf(a) {
+  if (!PHOTOS.enabled || DEMO || !/^[0-9a-f]{6}$/.test(a.hex)) return null
+  if (photoShown?.hex === a.hex) return photoShown
+  photoShown = null
+  loadPhoto(a.hex)
+  return null
+}
+async function loadPhoto(hex) {
+  if (photoBusy) return
+  photoBusy = true
+  try {
+    let m = photoMeta.get(hex)
+    if (!m || Date.now() - m.at > (m.src ? 24 : 6) * 3600000) {
+      const r = await fetch(`https://api.planespotters.net/pub/photos/hex/${hex.toUpperCase()}`, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const ph = (await r.json())?.photos?.[0]
+      m = { at: Date.now(), ...(ph?.thumbnail?.src ? { src: ph.thumbnail.src, credit: ph.photographer || '', link: ph.link } : {}) }
+      photoMeta.set(hex, m)
+      if (photoMeta.size > 300) photoMeta.delete(photoMeta.keys().next().value)
+    }
+    if (m.src && hex === selectedHex) {
+      const r = await fetch(m.src, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) })
+      if (!r.ok) throw new Error(`image HTTP ${r.status}`)
+      const img = await loadImage(Buffer.from(await r.arrayBuffer()))
+      if (hex === selectedHex) { photoShown = { hex, img, credit: m.credit, link: m.link }; refreshCenterNow(); logOnce('photo', 'Aircraft photos: working (planespotters.net)') }
+    }
+  } catch (e) {
+    photoMeta.set(hex, { at: Date.now() - 6 * 3600000 + 5 * 60000 }) // try again in 5 minutes
+    logOnce('photo-err', `Aircraft photos: lookup failed for ${hex} (${e.message})`)
+  }
+  photoBusy = false
+}
+function openPhotoPage(link) { // only ever opens a planespotters.net page, without going through a shell
+  try {
+    const u = new URL(link)
+    if (u.protocol !== 'https:' || !/(^|\.)planespotters\.net$/.test(u.hostname)) return
+    const [cmd, args] = process.platform === 'win32' ? ['rundll32', ['url.dll,FileProtocolHandler', u.href]] : process.platform === 'darwin' ? ['open', [u.href]] : ['xdg-open', [u.href]]
+    execFile(cmd, args, () => {})
+  } catch {}
+}
+
+// ---------- Airport weather (METAR from aviationweather.gov, for the selected airport only) ----------
+const WX = Object.assign({ enabled: true, refresh_min: 10 }, cfg.weather || {})
+const metars = new Map() // ICAO -> { at, m }
+let metarBusy = false
+const DEMO_METAR = { wdir: 250, wspd: 12, wgst: null, vis: '10+', qnh: 1018, temp: 14, cat: 'VFR' }
+function metarOf(ap) {
+  if (!WX.enabled || !ap) return null
+  if (DEMO) return DEMO_METAR
+  const c = metars.get(ap.icao)
+  if (!c || Date.now() - c.at > WX.refresh_min * 60000) loadMetar(ap.icao)
+  return c?.m || null
+}
+async function loadMetar(icao) {
+  if (metarBusy || !/^[A-Z]{4}$/.test(icao)) return
+  metarBusy = true
+  const prev = metars.get(icao)?.m || null
+  metars.set(icao, { at: Date.now(), m: prev })
+  try {
+    const r = await fetch(`https://aviationweather.gov/api/data/metar?ids=${icao}&format=json`, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    const body = (await r.text()).trim(), x = body ? JSON.parse(body)[0] : null // an airport without METAR answers with an empty body
+    const fresh = x && (!x.obsTime || Date.now() - x.obsTime * 1000 < 3 * 3600000)
+    metars.set(icao, { at: Date.now(), m: fresh ? { wdir: typeof x.wdir === 'number' ? x.wdir : (x.wdir ? 'VRB' : null), wspd: x.wspd || 0, wgst: x.wgst || null, vis: x.visib, qnh: x.altim ? Math.round(x.altim) : null, temp: x.temp, cat: x.fltCat || '' } : null })
+    refreshCenterNow()
+    logOnce(`metar-${icao}`, `Weather: ${icao} ${fresh ? 'METAR received' : 'has no recent METAR'}`)
+  } catch (e) {
+    metars.set(icao, { at: Date.now() - (WX.refresh_min - 2) * 60000, m: prev }) // try again in 2 minutes
+    logOnce('metar-err', `Weather: METAR ${icao} failed (${e.message})`)
+  }
+  metarBusy = false
+}
+const visText = v => v == null || v === '' ? '' : String(v).includes('+') ? '10+ km' : (km => km >= 5 ? `${Math.round(km)} km` : `${km.toFixed(1)} km`)(parseFloat(v) * 1.609)
+// Runway end the wind favours (best headwind); null when the wind is light, variable or straight across
+function windRunway(ap, m) {
+  if (!m || typeof m.wdir !== 'number' || m.wspd < 4) return null
+  let best = null, bh = 0.25
+  for (const e of ap.ends) { const hw = Math.cos(toRad(m.wdir - e.course)); if (hw > bh) { bh = hw; best = e } }
+  return best
+}
+
+// ---------- Watch list ----------
+// Aircraft worth a heads-up wherever they are in range: by type or registration (looked up in the tar1090 aircraft
+// database, downloaded once a month, so that it also works when the receiver does not send types), hex or callsign prefix.
+const WATCH = Object.assign({ enabled: true, types: ['A124', 'A225', 'A3ST', 'A337', 'BLCF', 'AN22', 'C5M', 'B52', 'B1', 'B2', 'U2'], registrations: [], callsigns: [], hex: [], max_km: 0 }, cfg.watch || {})
+const plain = v => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+const watchTypes = new Set(WATCH.types.map(plain)), watchRegs = new Set(WATCH.registrations.map(plain))
+const watchHex = new Set(WATCH.hex.map(h => String(h).toLowerCase())), watchCalls = WATCH.callsigns.map(plain).filter(Boolean)
+const watchDb = new Map() // hex -> label, for every aircraft of the database matching a watched type or registration
+const DB_FILE = new URL('./aircraft-db.csv.gz', import.meta.url)
+async function loadWatchDb() {
+  if (!WATCH.enabled || DEMO || (!watchTypes.size && !watchRegs.size)) return
+  try {
+    if (!existsSync(DB_FILE) || Date.now() - statSync(DB_FILE).mtimeMs > 30 * 86400000) {
+      console.log('Downloading the aircraft database for the watch list (tar1090-db, once a month)...')
+      const r = await fetch('https://raw.githubusercontent.com/wiedehopf/tar1090-db/csv/aircraft.csv.gz', { signal: AbortSignal.timeout(120000) })
+      if (r.ok) writeFileSync(DB_FILE, Buffer.from(await r.arrayBuffer()))
+      else if (!existsSync(DB_FILE)) throw new Error(`HTTP ${r.status}`)
+    }
+    for await (const line of createInterface({ input: createReadStream(DB_FILE).pipe(createGunzip()) })) { // hex;registration;type;flags;description
+      const f = line.split(';')
+      if (watchTypes.has(f[2]) || (f[1] && watchRegs.has(plain(f[1])))) watchDb.set(f[0].toLowerCase(), [f[2], f[1]].filter(Boolean).join(' '))
+    }
+    console.log(`Watch list: ${watchDb.size} aircraft`)
+  } catch (e) { console.error('Watch list database:', e.message) }
+}
+function watched(a) {
+  if (!WATCH.enabled || DEMO || (WATCH.max_km && a.d > WATCH.max_km)) return null
+  const db = watchDb.get(a.hex)
+  if (db) return db
+  if (watchHex.has(a.hex)) return a.hex.toUpperCase()
+  if (a.flight && watchCalls.some(c => a.flight.startsWith(c))) return a.flight
+  const ac = getInfo(a)?.aircraft
+  if (ac && (watchTypes.has(plain(ac.type)) || (ac.reg && watchRegs.has(plain(ac.reg))))) return [ac.type, ac.reg].filter(Boolean).join(' ')
+  return null
+}
+
+// ---------- Reception statistics (today's figures, kept in stats.json) ----------
+const STATS_FILE = new URL('./stats.json', import.meta.url)
+const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+const newDay = () => ({ day: dayKey(), seen: new Map(), mil: 0, airlines: {}, range: null, high: null, fast: null, peak: null, sectors: Array(36).fill(0) })
+let stats = newDay(), record = null, statsDirty = false, statsMode = false, statsSel = null, msgRate = null, lastMsgs = null
+if (!DEMO) try {
+  const j = JSON.parse(readFileSync(STATS_FILE))
+  record = j.record || null
+  if (j.today?.day === dayKey()) stats = { ...newDay(), ...j.today, seen: new Map(Object.entries(j.today.seen || {})) }
+} catch {}
+function updateStats(j) {
+  if (DEMO) return
+  if (stats.day !== dayKey()) stats = newDay()
+  if (typeof j.messages === 'number' && typeof j.now === 'number') {
+    if (lastMsgs && j.now > lastMsgs.now) msgRate = (j.messages - lastMsgs.messages) / (j.now - lastMsgs.now)
+    lastMsgs = { now: j.now, messages: j.messages }
+  }
+  const hhmm = new Date().toTimeString().slice(0, 5)
+  let n = 0
+  for (const a of aircraft) {
+    if (a.seenPos > 15 || !/^[0-9a-f]{6}$/.test(a.hex)) continue
+    n++
+    const name = a.flight || a.hex.toUpperCase(), code = airlineCode(a), known = stats.seen.get(a.hex)
+    if (known === undefined) { stats.seen.set(a.hex, ''); if (isMilitary(a)) stats.mil++ }
+    if (code && !known) { stats.seen.set(a.hex, code); stats.airlines[code] = (stats.airlines[code] || 0) + 1 }
+    if (a.d < 600 && (trails.get(a.hex)?.length || 0) >= 3) { // a tracked aircraft at a plausible distance, not a one-off decoding error
+      if (!stats.range || a.d > stats.range.km) stats.range = { km: a.d, brg: a.brg, name, at: hhmm }
+      const sec = Math.floor((((a.brg % 360) + 360) % 360) / 10)
+      if (a.d > stats.sectors[sec]) stats.sectors[sec] = Math.round(a.d)
+      if (!record || a.d > record.km) record = { km: a.d, day: stats.day, name }
+    }
+    if (a.alt != null && !a.ground && a.alt < 60000 && (!stats.high || a.alt > stats.high.alt)) stats.high = { alt: a.alt, name }
+    if (a.speed != null && a.speed < 1500 && (!stats.fast || a.speed > stats.fast.kt)) stats.fast = { kt: a.speed, name }
+  }
+  if (!stats.peak || n > stats.peak.n) stats.peak = { n, at: hhmm }
+  statsDirty = true
+}
+const saveStats = () => { if (statsDirty) { statsDirty = false; try { writeFileSync(STATS_FILE, JSON.stringify({ record, today: { ...stats, seen: Object.fromEntries(stats.seen) } })) } catch {} } }
+if (!DEMO) setInterval(saveStats, 300000)
+const topAirlines = () => Object.entries(stats.airlines).sort((p, q) => q[1] - p[1]).slice(0, 3)
 
 // ---------- RGB565 conversion ----------
 const rgbBuffers = new Map() // one reusable output buffer per canvas (the device library copies it before sending)
@@ -621,7 +798,7 @@ async function buildAllMaps() {
 const UI = {
   panel: '#0c1116', panelSel: '#082a35', panelWarn: '#2a0707', line: '#212d37',
   text: '#f3f6f8', sub: '#a3b3bf', mute: '#66757f',
-  cyan: '#39d5ff', green: '#46e08a', amber: '#ffb629', red: '#ff3d3d', magenta: '#ff4dff',
+  cyan: '#39d5ff', green: '#46e08a', amber: '#ffb629', red: '#ff3d3d', magenta: '#ff4dff', violet: '#c05cff',
   scrim: 'rgba(4,8,12,0.80)',
 }
 const font = (px, weight = 600) => `${weight} ${px}px ${FONT}`
@@ -780,10 +957,18 @@ function drawRadar() {
     g.lineCap = 'butt'
   }
 
+  // Stats page: today's coverage (maximum range per 10 degree sector around home)
+  if (statsMode && stats.sectors.some(Boolean)) {
+    g.beginPath()
+    stats.sectors.forEach((km, k) => { const [x, y] = plotXY(offsetPt({ lat: cfg.lat, lon: cfg.lon }, k * 10 + 5, Math.max(km, 0.5))); k ? g.lineTo(x, y) : g.moveTo(x, y) })
+    g.closePath(); g.fillStyle = withAlpha(UI.cyan, 0.1); g.fill(); g.strokeStyle = withAlpha(UI.cyan, 0.85); g.lineWidth = 1.3; g.stroke()
+  }
+
   // Aircraft
   for (const [a, x, y] of pts) {
     if (!inDisc(x, y, 118)) continue
     const emerg = isEmergency(a.squawk), col = altColor(a.alt)
+    if (a.watch) { g.strokeStyle = UI.violet; g.lineWidth = 1.8; g.beginPath(); g.moveTo(x, y - 14); g.lineTo(x + 14, y); g.lineTo(x, y + 14); g.lineTo(x - 14, y); g.closePath(); g.stroke() } // watch list: violet diamond
     if (emerg) { // red distress ring, pulsing from frame to frame
       const r = blink ? 14 : 11
       g.strokeStyle = UI.red; g.lineWidth = 2; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.stroke()
@@ -926,7 +1111,8 @@ function drawSpotlight(g, a, ov) {
   g.fillStyle = 'rgba(4,8,12,0.86)'; g.beginPath(); g.roundRect(bx, by, bw, bh, 10); g.fill()
   g.strokeStyle = emerg ? UI.red : 'rgba(255,255,255,0.16)'; g.lineWidth = 1; g.beginPath(); g.roundRect(bx + 0.5, by + 0.5, bw - 1, bh - 1, 9.5); g.stroke()
   g.fillStyle = col; g.beginPath(); g.roundRect(bx + 7, by + 7, 3, bh - 14, 1.5); g.fill()
-  const left = bx + 16, right = bx + bw - 10
+  const logo = logoOf(a), left = bx + (logo ? 37 : 16), right = bx + bw - 10
+  if (logo) drawLogo(g, logo, bx + 14, by + 7, 20)
   // line 1: callsign + flight level
   const fl = a.ground ? T.ground : a.alt != null ? `FL${String(Math.round(a.alt / 100)).padStart(3, '0')}` : ''
   const flw = txt(g, fl, right, by + 15, { px: 10, weight: 700, color: col, align: 'right' })
@@ -934,7 +1120,7 @@ function drawSpotlight(g, a, ov) {
   // line 2: what matters most right now
   const second = ov ? [T.overflight(ov.t < 1 ? '<1' : Math.round(ov.t)), UI.amber, T.at(ov.d.toFixed(1))]
     : app ? [`ILS ${app.end.id} ${app.ap.iata || app.ap.icao}`, UI.cyan, `${app.along.toFixed(1)} km`]
-    : [route ? `${route.from.iata} › ${route.to.iata}` : (info.aircraft?.type || `${Math.round(kmBetween(a, view))} km`), UI.sub, isMilitary(a) ? T.mil : countryOf(a)]
+    : [route ? `${route.from.iata} › ${route.to.iata}` : (info.aircraft?.type || `${Math.round(kmBetween(a, view))} km`), UI.sub, isMilitary(a) ? T.mil : logo ? '' : countryOf(a)]
   const rw = txt(g, second[2], right, by + 28, { px: 9, weight: 700, color: ov || app ? second[1] : UI.mute, align: 'right' })
   txt(g, second[0], left, by + 28, { px: 10, weight: ov || app ? 700 : 600, color: second[1], max: right - left - rw - 6 })
   if (a.hex !== selectedHex) wantInfo(a, true)
@@ -960,7 +1146,7 @@ const fmtKm = d => `${d < 10 ? d.toFixed(1) : Math.round(d)} km`
 
 function drawAircraftTile(g, i, a, refPoint) {
   const emerg = isEmergency(a.squawk), col = altColor(a.alt), app = approachOf(a), info = getInfo(a), route = routeOf(a)
-  const b = panel(g, i, { accent: emerg ? UI.red : col, fill: emerg ? UI.panelWarn : UI.panel, border: emerg ? UI.red : UI.line, bw: emerg ? 2 : 1 })
+  const b = panel(g, i, { accent: emerg ? UI.red : col, fill: emerg ? UI.panelWarn : UI.panel, border: emerg ? UI.red : a.watch ? UI.violet : UI.line, bw: emerg || a.watch ? 2 : 1 })
   txt(g, a.flight || a.hex.toUpperCase(), b.l, b.y + 18, { px: 14, weight: 700, max: b.r - b.l })
   // flight level, vertical trend, heading
   let x = b.l
@@ -975,6 +1161,7 @@ function drawAircraftTile(g, i, a, refPoint) {
   // what it is doing: distress, approach, route or type
   if (emerg) pill(g, `SQK ${a.squawk}`, b.l, b.y + 53, { fg: '#fff', bg: UI.red })
   else if (app) pill(g, `ILS ${app.end.id} ${app.ap.iata || app.ap.icao}`, b.l, b.y + 53, { fg: UI.cyan, bg: '#0a3440' })
+  else if (a.watch) txt(g, a.watch, b.l, b.y + 53, { px: 11, weight: 700, color: UI.violet, max: b.r - b.l })
   else if (route) txt(g, `${route.from.iata} › ${route.to.iata}`, b.l, b.y + 53, { px: 12, weight: 600, color: '#d5e0e8', max: b.r - b.l })
   else if (info?.aircraft?.type) txt(g, info.aircraft.type, b.l, b.y + 53, { px: 11, weight: 600, color: UI.mute })
   // distance, country
@@ -984,6 +1171,22 @@ function drawAircraftTile(g, i, a, refPoint) {
   if (logo) return drawLogo(g, logo, b.r - 21, b.y + 57, 22) // the airline logo replaces the country code
   txt(g, mil ? T.mil : countryOf(a), b.r - 12, b.y + 71, { px: 9, weight: 700, color: mil ? '#8fe05a' : UI.mute, align: 'right' })
   glyph(g, { track: a.track, category: 'A3' }, b.r - 4, b.y + 67, { color: UI.sub, outline: null, scale: 0.6 })
+}
+
+// Photo across tiles i and i + 1, with the photographer credit the Planespotters terms ask for
+function drawPhotoTiles(g, i, ph) {
+  const x = (i % 4) * TILE + PAD, y = Math.floor(i / 4) * TILE + PAD, w = TILE + TW, h = TW, img = ph.img
+  g.save(); g.beginPath(); g.roundRect(x, y, w, h, 8); g.clip()
+  const k = Math.max(w / img.width, h / img.height), iw = img.width * k, ih = img.height * k
+  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high'
+  g.drawImage(img, x + (w - iw) / 2, y + (h - ih) * 0.45, iw, ih)
+  const shade = g.createLinearGradient(0, y + h - 30, 0, y + h)
+  shade.addColorStop(0, 'rgba(0,0,0,0)'); shade.addColorStop(1, 'rgba(0,0,0,0.82)')
+  g.fillStyle = shade; g.fillRect(x, y + h - 30, w, 30)
+  g.restore()
+  g.strokeStyle = UI.line; g.lineWidth = 1; g.beginPath(); g.roundRect(x + 0.5, y + 0.5, w - 1, h - 1, 7.5); g.stroke()
+  txt(g, `© ${ph.credit}`, x + 7, y + h - 6, { px: 8, weight: 600, color: '#eef2f5', max: TW - 12 })
+  txt(g, 'planespotters.net', x + w - 7, y + h - 6, { px: 8, weight: 600, color: '#c3ccd3', align: 'right' })
 }
 
 function drawInfoTile(g, i, label, value, { color = UI.text, sub = '', sub2 = '', px = 21, fill, border } = {}) {
@@ -1048,11 +1251,12 @@ function drawIlsTile(g, i, app) {
   g.lineCap = 'butt'
 }
 
+let photoLink = null // page of the photo currently on tiles 9 and 10 (opened by a tap)
 function drawDetail(g, sel) {
   const info = getInfo(sel) || {}, emerg = isEmergency(sel.squawk)
   const col = altColor(sel.alt), r = routeOf(sel), al = info.airline, ac = info.aircraft
   // identity
-  const b = panel(g, 0, { accent: emerg ? UI.red : col, fill: emerg ? UI.panelWarn : UI.panel, border: emerg ? UI.red : UI.line, bw: emerg ? 2 : 1 })
+  const b = panel(g, 0, { accent: emerg ? UI.red : col, fill: emerg ? UI.panelWarn : UI.panel, border: emerg ? UI.red : sel.watch ? UI.violet : UI.line, bw: emerg || sel.watch ? 2 : 1 })
   txt(g, sel.flight || sel.hex.toUpperCase(), b.l, b.y + 23, { px: 16, weight: 700, max: b.r - b.l })
   txt(g, al?.name || ac?.owner || '', b.l, b.y + 38, { px: 10, weight: 600, color: UI.sub, max: b.r - b.l })
   let cx = b.l
@@ -1072,11 +1276,16 @@ function drawDetail(g, sel) {
   const vr = sel.vrate
   drawInfoTile(g, 6, T.vs, vr != null ? `${vr > 0 ? '+' : ''}${vr.toLocaleString(T.locale)}` : '–', { color: vr > 300 ? UI.green : vr < -300 ? UI.amber : UI.text, sub: 'ft/min', px: 19 })
   drawHeadingTile(g, 7, sel)
-  const app = approachOf(sel)
+  const app = approachOf(sel), photo = app ? null : photoOf(sel)
+  photoLink = null
   if (app) { // ILS-like approach: deviation indicator, runway, time to touchdown
     drawIlsTile(g, 8, app)
     drawInfoTile(g, 9, `ILS ${app.ap.iata || app.ap.icao}`, app.end.id, { color: UI.cyan, sub: `${app.along.toFixed(1)} km`, border: withAlpha(UI.cyan, 0.5) })
     drawInfoTile(g, 10, T.eta, app.eta < 1 ? '<1 min' : `${Math.round(app.eta)} min`, { sub: `${T.slope} ${app.glide.toFixed(1)}°`, px: 19, border: withAlpha(UI.cyan, 0.5) })
+  } else if (photo) { // photo on two tiles: distance and squawk share one tile, the airline is already on the identity tile
+    drawInfoTile(g, 8, T.dist, sel.d.toFixed(1), { sub: `km ${T.brgAt(Math.round(sel.brg))}`, sub2: sel.squawk ? `SQK ${sel.squawk}` : '' })
+    drawPhotoTiles(g, 9, photo)
+    photoLink = photo.link
   } else {
     drawInfoTile(g, 8, T.dist, sel.d.toFixed(1), { sub: 'km', sub2: T.brgAt(Math.round(sel.brg)) })
     drawInfoTile(g, 9, T.squawk, sel.squawk || '––––', { color: emerg ? UI.red : UI.text })
@@ -1143,20 +1352,88 @@ function drawPicker(g) {
 }
 
 // Airport mode: the first tile is the airport itself (tap it to pick another one)
+// Weather of the selected airport: wind (with a dial showing it against the runways), flight category, QNH, visibility
+function drawWeatherTile(g, i, ap, m) {
+  const b = panel(g, i), cat = { VFR: UI.green, MVFR: UI.cyan, IFR: UI.red, LIFR: UI.magenta }[m.cat]
+  txt(g, T.wind, b.l, b.y + 16, { px: 9, weight: 700, color: UI.mute })
+  if (cat) pill(g, m.cat, b.r, b.y + 16, { px: 8, fg: cat, bg: withAlpha(cat, 0.16), align: 'right', h: 12 })
+  const calm = !m.wspd, vrb = typeof m.wdir !== 'number'
+  txt(g, calm ? T.calm : vrb ? 'VRB' : `${String(Math.round(m.wdir / 10) * 10 || 360).padStart(3, '0')}°`, b.l, b.y + 39, { px: calm ? 12 : 15, weight: 700, max: 32 })
+  if (!calm) txt(g, m.wgst ? `${m.wspd}-${m.wgst} kt` : `${m.wspd} kt`, b.l, b.y + 54, { px: 10, weight: 700, color: m.wgst ? UI.amber : UI.sub, max: 32 })
+  const cx = b.r - 15, cy = b.y + 41, r = 15
+  g.strokeStyle = '#2c3a45'; g.lineWidth = 1.5; g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.stroke()
+  g.strokeStyle = UI.green; g.lineWidth = 1.6; g.beginPath(); g.moveTo(cx, cy - r); g.lineTo(cx, cy - r + 4); g.stroke()
+  g.lineCap = 'round'
+  for (const w of ap.runways) { // runways, as seen from above
+    const t = toRad(bearing(w.a, w.b)), dx = Math.sin(t) * r * 0.62, dy = -Math.cos(t) * r * 0.62
+    g.strokeStyle = '#7d8c97'; g.lineWidth = 3; g.beginPath(); g.moveTo(cx - dx, cy - dy); g.lineTo(cx + dx, cy + dy); g.stroke()
+  }
+  if (!calm && !vrb) { // arrow flying with the wind, from the rim towards the centre
+    const t = toRad(m.wdir), ux = Math.sin(t), uy = -Math.cos(t), x0 = cx + ux * (r + 3), y0 = cy + uy * (r + 3), x1 = cx + ux * 4, y1 = cy + uy * 4
+    g.strokeStyle = UI.cyan; g.fillStyle = UI.cyan; g.lineWidth = 2; g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1 + ux * 4, y1 + uy * 4); g.stroke()
+    g.beginPath(); g.moveTo(x1, y1); g.lineTo(x1 + ux * 7 - uy * 4, y1 + uy * 7 + ux * 4); g.lineTo(x1 + ux * 7 + uy * 4, y1 + uy * 7 - ux * 4); g.closePath(); g.fill()
+  }
+  g.lineCap = 'butt'
+  if (m.qnh) txt(g, `Q${m.qnh}`, b.l, b.y + 74, { px: 10, weight: 700, color: UI.sub })
+  txt(g, visText(m.vis), b.r, b.y + 74, { px: 9, weight: 600, color: UI.mute, align: 'right' })
+}
+
+// ---------- Reception statistics page (button 4) ----------
+function drawCoverageTile(g, i) { // today's maximum range in each 10 degree sector
+  const b = panel(g, i), cx = b.cx, cy = b.y + 49, R = 27
+  txt(g, T.stCover, b.l, b.y + 16, { px: 9, weight: 700, color: UI.mute, max: b.r - b.l })
+  const top = Math.max(...stats.sectors, 1), scale = [50, 100, 150, 200, 300, 400, 500, 600].find(v => v >= top) || 600
+  g.strokeStyle = '#2c3a45'; g.lineWidth = 1
+  for (const k of [0.5, 1]) { g.beginPath(); g.arc(cx, cy, R * k, 0, Math.PI * 2); g.stroke() }
+  g.strokeStyle = UI.green; g.lineWidth = 1.6; g.beginPath(); g.moveTo(cx, cy - R); g.lineTo(cx, cy - R + 4); g.stroke()
+  g.beginPath()
+  stats.sectors.forEach((km, k) => { const t = toRad(k * 10 + 5), rr = Math.max(1.5, km / scale * R), x = cx + rr * Math.sin(t), y = cy - rr * Math.cos(t); k ? g.lineTo(x, y) : g.moveTo(x, y) })
+  g.closePath(); g.fillStyle = withAlpha(UI.cyan, 0.22); g.fill(); g.strokeStyle = UI.cyan; g.lineWidth = 1.2; g.stroke()
+  txt(g, String(scale), b.r, b.y + 77, { px: 8, weight: 600, color: UI.mute, align: 'right' })
+}
+function drawStats(g) {
+  const b = panel(g, 0, { fill: UI.panelSel, border: UI.cyan, bw: 2 }), [, mo, da] = stats.day.split('-')
+  txt(g, T.stTitle, b.l, b.y + 22, { px: 12, weight: 700, color: UI.cyan, max: b.r - b.l })
+  txt(g, T.today, b.l, b.y + 39, { px: 10, weight: 600, color: UI.sub, max: b.r - b.l })
+  txt(g, `${da}/${mo}`, b.l, b.y + 56, { px: 11, weight: 700 })
+  if (msgRate != null) txt(g, `${Math.round(msgRate).toLocaleString(T.locale)} msg/s`, b.l, b.y + 74, { px: 9, weight: 600, color: UI.mute, max: b.r - b.l })
+  const now = aircraft.filter(a => a.seenPos <= 15).length, rg = stats.range, dm = d => d ? d.slice(8, 10) + '/' + d.slice(5, 7) : ''
+  drawInfoTile(g, 1, T.stSeen, stats.seen.size.toLocaleString(T.locale), { sub: T.today, sub2: stats.mil ? T.stMil(stats.mil) : '' })
+  drawInfoTile(g, 2, T.stNow, String(now), { sub: stats.peak ? T.stPeak(stats.peak.n) : '', sub2: stats.peak?.at })
+  drawInfoTile(g, 3, T.stRange, rg ? String(Math.round(rg.km)) : '–', { color: rg ? UI.green : UI.mute, sub: rg ? `km ${T.brgAt(Math.round(rg.brg))}` : 'km', sub2: rg ? `${rg.name} ${rg.at}` : '' })
+  drawInfoTile(g, 4, T.stRecord, record ? String(Math.round(record.km)) : '–', { color: record ? UI.text : UI.mute, sub: `km ${dm(record?.day)}`, sub2: record?.name })
+  drawInfoTile(g, 5, T.stHigh, stats.high ? `FL${Math.round(stats.high.alt / 100)}` : '–', { color: stats.high ? altColor(stats.high.alt) : UI.mute, sub: stats.high?.name, px: 19 })
+  drawInfoTile(g, 6, T.stFast, stats.fast ? String(Math.round(stats.fast.kt * 1.852)) : '–', { sub: 'km/h', sub2: stats.fast?.name })
+  drawCoverageTile(g, 7)
+  topAirlines().forEach(([code, n], k) => {
+    const t = panel(g, 8 + k), logo = logoByCode(code)
+    txt(g, `TOP ${k + 1}`, t.l, t.y + 16, { px: 9, weight: 700, color: UI.mute })
+    if (logo) drawLogo(g, logo, t.l, t.y + 23, 36)
+    txt(g, code, logo ? t.l + 42 : t.l, t.y + 44, { px: logo ? 13 : 19, weight: 700, max: t.r - t.l - (logo ? 42 : 0) })
+    txt(g, T.traffic(n), t.l, t.y + 74, { px: 10, weight: 600, color: UI.sub, max: t.r - t.l })
+  })
+  drawNavTile(g, 11, 'back', T.back, { color: UI.green })
+}
+
 function drawAirportHeader(g, i, ap, traffic) {
   const active = [...new Set(aircraft.map(approachOf).filter(p => p?.ap === ap).map(p => p.end.id))]
   const b = panel(g, i, { fill: UI.panelSel, border: UI.cyan, bw: 2 })
   txt(g, ap.iata || ap.icao, b.l, b.y + 25, { px: 19, weight: 700, color: UI.cyan })
   txt(g, ap.city || ap.name, b.l, b.y + 41, { px: 10, weight: 600, color: UI.sub, max: b.r - b.l })
-  txt(g, active.length ? `${T.rwy} ${active.join(' ')}` : runwayNames(ap), b.l, b.y + 58, { px: active.length ? 11 : 9, weight: 700, color: active.length ? UI.text : UI.mute, max: b.r - b.l })
+  const wr = !active.length && windRunway(ap, metarOf(ap)) // no landing in sight: the runway the wind favours
+  txt(g, active.length ? `${T.rwy} ${active.join(' ')}` : wr ? `${T.rwy} ${wr.id} ${T.byWind}` : runwayNames(ap), b.l, b.y + 58, { px: active.length ? 11 : wr ? 10 : 9, weight: 700, color: active.length ? UI.text : wr ? UI.sub : UI.mute, max: b.r - b.l })
   txt(g, T.traffic(traffic), b.l, b.y + 75, { px: 9, weight: 600, color: UI.mute })
   g.strokeStyle = UI.cyan; g.lineWidth = 1.8; g.lineCap = 'round'; g.beginPath(); g.moveTo(b.r - 9, b.y + 69); g.lineTo(b.r - 5, b.y + 73); g.lineTo(b.r - 1, b.y + 69); g.stroke(); g.lineCap = 'butt'
 }
 
-const currentList = () => airportMode ? airportTraffic() : visible()
+const currentList = () => { // watched aircraft first, then nearest first
+  const l = airportMode ? airportTraffic() : visible()
+  return l.some(a => a.watch) ? [...l.filter(a => a.watch), ...l.filter(a => !a.watch)] : l
+}
 function drawList(g) {
-  const list = currentList(), ap = airportMode && airportByIcao(selAirport), first = ap ? 1 : 0
+  const list = currentList(), ap = airportMode && airportByIcao(selAirport), wx = ap && metarOf(ap), first = ap ? (wx ? 2 : 1) : 0
   if (ap) drawAirportHeader(g, 0, ap, list.length)
+  if (wx) drawWeatherTile(g, 1, ap, wx)
   list.slice(0, 12 - first).forEach((a, k) => { tileHexes[k + first] = a.hex; drawAircraftTile(g, k + first, a, ap) })
   if (!list.length) wrapText(g, ap ? T.noTraffic : T.noAircraft(RANGES[rangeIdx]), first * TILE + TILE / 2, 36, TW - 10, 14, { px: 11, weight: 600, color: UI.mute })
 }
@@ -1166,9 +1443,12 @@ function drawCenter() {
   g.fillStyle = '#000'; g.fillRect(0, 0, 360, 270)
   tileHexes = []; tileAirports = []
   const sel = aircraft.find(a => a.hex === selectedHex)
+  if (statsMode && selectedHex !== statsSel) { if (selectedHex) statsMode = false; else statsSel = null } // selecting an aircraft leaves the statistics page
   if (picker) drawPicker(g)
+  else if (statsMode) drawStats(g)
   else if (sel) drawDetail(g, sel)
   else drawList(g)
+  if (picker || statsMode || !sel) { photoShown = null; photoLink = null } // a photo is only kept while it is on screen
   return toRGB565(centerCanvas, false)
 }
 
@@ -1215,12 +1495,24 @@ function classify(a) {
   return null
 }
 let ackUntil = 0
+const watchAlerted = new Map(), watchAck = new Set()
 function checkAlert() {
   if (!device) return
   const rank = { info: 1, warn: 2, emerg: 3 }
   let best = null
   for (const a of aircraft) { const c = classify(a); if (c && (!best || rank[c[0]] > rank[best.c[0]])) best = { a, c } }
-  alertLevel = best && Date.now() > ackUntil ? best.c[0] : null
+  // Watch list: one heads-up per aircraft and per hour, wherever it is; LED 8 stays violet until button 8 is pressed
+  const now = Date.now()
+  for (const a of aircraft) if (a.watch && now - (watchAlerted.get(a.hex) || 0) > 3600000) {
+    watchAlerted.set(a.hex, now); watchAck.delete(a.hex)
+    const msg = `${a.flight || a.hex.toUpperCase()} : ${a.watch}, ${a.alt ?? '?'} ft, ${Math.round(a.d)} km`
+    console.log('Watch:', msg)
+    safe(() => device.vibrate(0x53))
+    if (A.ha_notify && cfg.ha_url && cfg.ha_token) notifyHA(msg)
+  }
+  if (watchAlerted.size > 500) watchAlerted.clear()
+  const watchNow = aircraft.some(a => a.watch && !watchAck.has(a.hex))
+  alertLevel = best && now > ackUntil ? best.c[0] : watchNow ? 'watch' : null
   if (best && Date.now() - (alerted.get(best.a.hex) || 0) > 10 * 60000) {
     alerted.set(best.a.hex, Date.now())
     const a = best.a, msg = `${a.flight || a.hex.toUpperCase()} : ${best.c[1]}, ${a.alt ?? '?'} ft, ${a.d.toFixed(1)} km`
@@ -1237,16 +1529,17 @@ async function notifyHA(msg) {
   } catch (e) { console.error('Home Assistant notification:', e.message) }
 }
 
-// LEDs: button 1 = night mode, 2 = airport picker, 3 = airport mode, 8 = alert (blinking)
+// LEDs: button 1 = night mode, 2 = airport picker, 3 = airport mode, 4 = statistics, 8 = alert (blinking) or watch list (violet)
 let blink = false
 const lastLeds = []
 function updateLeds() {
-  const cols = Array(7).fill('#000000') // buttons 4 to 7 are free
+  const cols = Array(7).fill('#000000') // buttons 5 to 7 are free
   if (night) cols[0] = '#400000'
   if (airports.length) cols[1] = picker ? '#00c0ff' : '#003040'
   if (airportMode) cols[2] = '#00c0ff'
-  const alertCol = { emerg: '#ff0000', warn: '#ff6a00', info: '#ffd000' }[alertLevel]
-  cols.push(alertCol ? (blink || alertLevel === 'info' ? alertCol : '#000000') : '#000000')
+  if (statsMode) cols[3] = '#00c0ff'
+  const alertCol = { emerg: '#ff0000', warn: '#ff6a00', info: '#ffd000', watch: '#9000ff' }[alertLevel]
+  cols.push(alertCol ? (blink || alertLevel === 'info' || alertLevel === 'watch' ? alertCol : '#000000') : '#000000')
   cols.forEach((color, id) => { if (lastLeds[id] !== color) { lastLeds[id] = color; safe(() => device.setButtonColor({ id, color })) } })
 }
 
@@ -1263,12 +1556,13 @@ const lastSig = { center: '', left: '', right: '' }
 let lastCenterAt = 0, lastWheelAt = 0, forceCenter = false, pending = false, wheelDue = false
 function centerSig() {
   if (picker) return JSON.stringify(['P', pickerPage, selAirport, [...airportStats()].map(([k, v]) => [k, v.app, v.arr, v.dep, v.next?.name, Math.round(v.next?.eta ?? 0)])])
+  if (statsMode && selectedHex === statsSel) return JSON.stringify(['S', stats.seen.size, aircraft.length, Math.round(stats.range?.km || 0), stats.high?.alt, Math.round(stats.fast?.kt || 0), stats.peak?.n, Math.round((msgRate || 0) / 25), topAirlines(), stats.sectors])
   const sel = aircraft.find(a => a.hex === selectedHex)
   if (sel) {
     const app = approachOf(sel) // on approach the needles move, so their position is part of the signature
     return JSON.stringify([sel.hex, getInfo(sel)?.at, app && [app.end.id, Math.round(app.locDev * 20), Math.round(app.gsDev * 20), Math.round(app.along * 10)], sel.alt, sel.speed, sel.vrate, Math.round(sel.d * 10), sel.track, sel.squawk])
   }
-  return JSON.stringify([airportMode, selAirport, rangeIdx, minAltFt, filterIdx, currentList().slice(0, 12).map(a => [a.hex, routeOf(a)?.from.iata, routeOf(a)?.to.iata, countryOf(a), approachOf(a)?.end.id, Math.round((a.alt ?? 0) / 100), Math.round(a.d), a.track, Math.sign(Math.round((a.vrate ?? 0) / 300)), a.squawk])])
+  return JSON.stringify([airportMode, selAirport, rangeIdx, minAltFt, filterIdx, metars.get(selAirport)?.at, currentList().slice(0, 12).map(a => [a.hex, a.watch, routeOf(a)?.from.iata, routeOf(a)?.to.iata, countryOf(a), approachOf(a)?.end.id, Math.round((a.alt ?? 0) / 100), Math.round(a.d), a.track, Math.sign(Math.round((a.vrate ?? 0) / 300)), a.squawk])])
 }
 async function render({ wheel = true } = {}) {
   if (!device || busy) return
@@ -1382,9 +1676,16 @@ async function main() {
       safe(() => device.setBrightness(brightness))
       lastSig.center = lastSig.left = lastSig.right = ''
     }
-    else if (id === 1) togglePicker()                 // button 2: airport picker
+    else if (id === 1) { statsMode = false; togglePicker() } // button 2: airport picker
     else if (id === 2) { picker = false; setAirportMode(!airportMode) } // button 3: airport mode
-    else if (id === 7) { ackUntil = Date.now() + 5 * 60000; alertLevel = null } // button 8: acknowledge alerts for 5 min
+    else if (id === 3) { statsMode = !statsMode; picker = false; statsSel = selectedHex } // button 4: reception statistics
+    else if (id === 7) { // button 8: show the watched aircraft if there is one, and acknowledge alerts for 5 min
+      const w = aircraft.find(a => a.watch && !watchAck.has(a.hex))
+      if (w) { selectedHex = w.hex; picker = false; statsMode = false }
+      for (const a of aircraft) if (a.watch) watchAck.add(a.hex)
+      if (watchAck.size > 300) watchAck.clear()
+      ackUntil = Date.now() + 5 * 60000; alertLevel = null
+    }
     else if (id === 'knobCT') { if (picker) togglePicker(false); else cycleSelection() }
     else if (id === 'knobTL') minAltFt = 0
     else if (id === 'knobCL') filterIdx = 0
@@ -1395,7 +1696,7 @@ async function main() {
     else if (id === 'b') pan(0, 1)
     else if (id === 'c') pan(-1, 0)
     else if (id === 'd') pan(1, 0)
-    else if (id === 'e' || id === 'home') { picker = false; selAirport = defaultAirport; setAirportMode(false) } // back to home
+    else if (id === 'e' || id === 'home') { picker = false; statsMode = false; selAirport = defaultAirport; setAirportMode(false) } // back to home
     refreshCenterNow()
   })
   device.on('touchstart', ({ changedTouches }) => {
@@ -1409,7 +1710,8 @@ async function main() {
         else if (k === 11) pickerPage = (pickerPage + 1) % pickerPages()
         else if (tileAirports[k]) pickAirport(tileAirports[k])
       }
-      else if (selectedHex) { if (k === 11) selectedHex = null }
+      else if (statsMode) { if (k === 11) statsMode = false }
+      else if (selectedHex) { if (k === 11) selectedHex = null; else if ((k === 9 || k === 10) && photoLink) openPhotoPage(photoLink) }
       else if (airportMode && k === 0) togglePicker(true)
       else if (tileHexes[k]) selectedHex = tileHexes[k]
       refreshCenterNow()
@@ -1418,6 +1720,7 @@ async function main() {
 
   buildAllMaps()
   await loadAirports().catch(e => console.error('Airports:', e.message))
+  loadWatchDb()
   await poll()
   setInterval(poll, cfg.poll_ms)
   setInterval(() => render({ wheel: Date.now() - lastWheelAt >= INPUT_MS * 0.8 }), 1000 / (cfg.fps ?? 1))
@@ -1433,7 +1736,7 @@ async function main() {
   console.log('Radar running. Ctrl+C to quit.')
 }
 
-process.on('SIGINT', async () => { try { await device?.close() } catch {} process.exit(0) })
+process.on('SIGINT', async () => { saveStats(); try { await device?.close() } catch {} process.exit(0) })
 if (DEMO) import('./tools/render-screenshots.js').then(async m => {
   await loadAirports().catch(e => console.error('Airports:', e.message))
   return m.render({ setAircraft: list => { aircraft = list }, setState, drawRadar, drawCenter, drawSide, leftCells, rightCells, knobCanvas, centerCanvas, sideCanvas, drawMap, infoCache, trails, cfg, toRad, offsetPt, getAirports: () => airports })
@@ -1446,6 +1749,6 @@ function setState(st) {
   for (const [k, set] of Object.entries({
     rangeIdx: v => { rangeIdx = v }, filterIdx: v => { filterIdx = v }, labelsMax: v => { labelsMax = v }, sweep: v => { sweep = v },
     spotIdx: v => { spotIdx = v; spotAt = Date.now() }, blink: v => { blink = v }, view: v => { view = v }, selAirport: v => { selAirport = v },
-    airportMode: v => { airportMode = v }, picker: v => { picker = v }, pickerPage: v => { pickerPage = v }, minAltFt: v => { minAltFt = v },
+    airportMode: v => { airportMode = v }, picker: v => { picker = v }, statsMode: v => { statsMode = v; statsSel = selectedHex }, stats: v => { stats = { ...newDay(), ...v, seen: new Map(v.seen) }; record = v.record; msgRate = v.msgRate }, pickerPage: v => { pickerPage = v }, minAltFt: v => { minAltFt = v },
   })) if (k in st) set(st[k])
 }

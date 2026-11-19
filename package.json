@@ -1,6 +1,6 @@
 {
   "name": "loupedeck-ct-adsb-radar",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Turn a Loupedeck CT into a live ADS-B aircraft radar fed by tar1090 / dump1090",
   "type": "module",
   "private": true,

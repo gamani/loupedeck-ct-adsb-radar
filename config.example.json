@@ -64,6 +64,21 @@
   "logos": {
     "enabled": true
   },
+  "photos": {
+    "enabled": true
+  },
+  "weather": {
+    "enabled": true,
+    "refresh_min": 10
+  },
+  "watch": {
+    "enabled": true,
+    "types": ["A124", "A225", "A3ST", "A337", "BLCF", "AN22", "C5M", "B52", "B1", "B2", "U2"],
+    "registrations": [],
+    "callsigns": [],
+    "hex": [],
+    "max_km": 0
+  },
   "airports": {
     "enabled": true,
     "radius_km": 350,

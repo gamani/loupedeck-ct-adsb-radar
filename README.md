@@ -13,13 +13,13 @@ The round wheel screen becomes a radar scope over a satellite map, the touch pan
 **Wheel screen (radar scope)**
 - Satellite map with borders and place names under a compass rose, range rings and a radar sweep. The view can **follow** an aircraft.
 - Aircraft silhouettes coloured by altitude (tar1090-style scale), fading **trails**, callsign labels that avoid each other.
-- **Spotlight banner**: one aircraft at a time with callsign, flight level, route and country, cycling through the nearest ones.
+- **Spotlight banner**: one aircraft at a time with airline logo, callsign, flight level and route, cycling through the nearest ones.
 - **Overflight prediction**: aircraft about to pass close to your home get a dashed projected path and a countdown ("Overhead 3 min").
 - **Distress ring**: aircraft squawking 7500 / 7600 / 7700 get a pulsing red ring and take over the banner.
 
 **Touch panel (12 keys)**
 - **List**: the 12 nearest aircraft, one per key: callsign, flight level with climb / descent marker, route (or ILS runway), distance, airline logo (country code when there is none).
-- **Detail card**: tap an aircraft and the 12 keys become its card: from / to, type and registration, altitude, speed, vertical speed, heading dial, distance, squawk, airline with its logo.
+- **Detail card**: tap an aircraft and the 12 keys become its card: from / to, type and registration, altitude, speed, vertical speed, heading dial, distance, squawk, airline with its logo. When a **photo** of the aircraft exists on [Planespotters.net](https://www.planespotters.net), it fills two keys (with the photographer's credit); tap it to open its page in your browser.
 - **Airport picker**: button 2 lists the airports around you, 10 per page (airports with scheduled flights first, nearest first), with their runways, distance and a live traffic badge: aircraft on final (with the next landing and its time to touchdown), arrivals and departures. Tap one to jump to it.
 
 ![Detail card](docs/screenshots/detail.png)
@@ -32,17 +32,25 @@ The round wheel screen becomes a radar scope over a satellite map, the touch pan
 - Aircraft on final approach are detected from their position, track and altitude (aligned within 3°, on a 1.5 to 5° glide path): tiles and banner show e.g. `ILS 23 SXB`.
 - In the detail card, an approach adds a cockpit-style **deviation indicator** (localizer and glide slope needles), the runway, the distance to the threshold, the time to touchdown and the actual glide angle.
 - **Airport mode** centres the scope on the selected airport and lists only its traffic (on approach, inbound or outbound).
+- **Airport weather**: in airport mode, a tile shows the latest METAR of the selected airport: wind (with a dial showing it against the runways), gusts, flight category, QNH and visibility. When nobody is on final, the header shows the runway the wind favours.
 - Arrivals and departures come from the route when it is known; otherwise an aircraft climbing or descending below FL200 within 60 km is attached to the nearest airport with scheduled flights. Traffic is limited to what your receiver hears: finals at distant airports are usually below its horizon.
 
 ![Approach](docs/screenshots/approach.png)
+
+![Airport mode with weather](docs/screenshots/airport-weather.png)
 
 These deviations are computed from ADS-B data (position once per second, altitude in 25 ft steps, no pressure correction), not from the real ILS signal: they are indicative, not certified.
 
 **Alerts**
 - Button 8 blinks and the CT vibrates for emergencies (red), low military aircraft nearby (orange), and low aircraft / imminent overflight (yellow). An emergency aircraft is selected and followed automatically.
+- **Watch list**: aircraft types, registrations, hex codes or callsign prefixes you care about (An-124, Beluga, B-52... by default). When one enters your coverage, at any distance, the CT vibrates, button 8 turns violet and the aircraft gets a violet diamond on the scope and comes first in the list. Press button 8 to jump to it.
 - Optional push notification through Home Assistant.
 
 ![Emergency squawk](docs/screenshots/emergency.png)
+
+**Reception statistics**: button 4 shows today's figures: aircraft seen, peak, maximum range (and your all-time record), highest, fastest, top airlines and a polar plot of your coverage, which is also drawn on the scope. Handy to judge an antenna.
+
+![Reception statistics](docs/screenshots/stats.png)
 
 **Night mode**: button 1 dims everything and switches all screens to red.
 
@@ -67,17 +75,19 @@ These deviations are computed from ADS-B data (position once per second, altitud
 | Round button 1 | Night mode on / off |
 | Round button 2 | Open / close the airport picker |
 | Round button 3 | Airport mode on / off |
-| Round button 8 | Alert indicator; press to acknowledge alerts for 5 minutes |
+| Round button 4 | Reception statistics on / off |
+| Round button 8 | Alert indicator; press to acknowledge alerts for 5 minutes. Violet = an aircraft of the watch list is in range: press to jump to it |
 | A / B / C / D (arrows) | Pan the map (stops following) |
 | E or Home (○) | Back to home: leaves airport mode, stops following |
 | Tap a tile | Open the aircraft card and follow it on the radar |
 | Tap "Back" | Back to the list, the radar returns home |
+| Tap the photo (aircraft card) | Open the photo's page on Planespotters.net in your browser |
 | Tap an aircraft on the wheel | Select and follow it |
 | Tap an airport on the wheel | Select that airport (centrelines) |
 | Tap an airport in the picker | Select it and switch to airport mode |
 | Tap the airport tile (airport mode) | Open the picker |
 
-Round buttons 4 to 7 are free for your own ideas.
+Round buttons 5 to 7 are free for your own ideas.
 
 ## Requirements
 
@@ -111,6 +121,9 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 | `lat`, `lon` | | Home position |
 | `airport` | | `{ name, lat, lon, radius_km, below_ft }` for the airport filter |
 | `airports` | | `enabled`, `radius_km` (area loaded), `types` (OurAirports types), `min_runway_ft`, `approach_km` (centreline length), `mode_range_km` (range used by airport mode), `default` (ICAO or IATA of the airport selected at start) |
+| `photos` | | `enabled` (default `true`): aircraft photo in the detail card |
+| `weather` | | `enabled` (default `true`), `refresh_min` (default `10`): METAR of the selected airport |
+| `watch` | | Watch list: `enabled`, `types` (ICAO type codes such as `A124`, `A388`), `registrations`, `hex`, `callsigns` (prefixes), `max_km` (0 = any distance) |
 | `logos` | | `enabled` (default `true`), `urls` (list of URL templates with `{icao}`, tried in order) for the airline logos |
 | `font` | `segoe` | `segoe`, `bahnschrift` (condensed, DIN-like) or `arial` |
 | `ranges_km`, `default_range_km` | 10 to 300, 100 | Radar ranges |
@@ -136,6 +149,10 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 - Military detection is a heuristic based on known ICAO address blocks and callsign prefixes.
 - Overflight prediction assumes straight-line flight, so turning or approaching aircraft may deviate.
 - Airline logos: the airline is read from the callsign (its first three letters are the ICAO airline code). Each logo is shown as a round badge, downloaded once from [Jxck-S/airline-logos](https://github.com/Jxck-S/airline-logos) and cached in `logos/`. No logo is shipped with this project, and the demo screenshots are rendered without them. Set `logos.enabled` to `false` to turn them off.
+- Aircraft photos come from the [Planespotters.net photo API](https://www.planespotters.net/photo/api) and follow its terms: the photographer is credited on the photo, a tap opens the photo's page, and the image is only kept in memory while it is on screen (nothing is stored, and the demo screenshots contain no photo).
+- Airport weather is the latest METAR from the [Aviation Weather Center API](https://aviationweather.gov/data/api/), requested for the selected airport only, every 10 minutes at most.
+- The watch list resolves types and registrations with the [tar1090 aircraft database](https://github.com/wiedehopf/tar1090-db), downloaded once a month into `aircraft-db.csv.gz`, so it also works with receivers that do not send aircraft types.
+- Reception statistics are kept in `stats.json` (today's figures and your all-time range record). A position only counts for the range once the aircraft has been tracked for a few seconds, to ignore decoding errors.
 - Map tiles are cached in `tiles/`.
 
 ## Screenshots
@@ -149,6 +166,9 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 - [adsb.lol](https://adsb.lol): route data
 - [OurAirports](https://ourairports.com): airport and runway data (public domain)
 - [adsbdb.com](https://www.adsbdb.com): aircraft, airline and fallback route data
+- [Planespotters.net](https://www.planespotters.net): aircraft photos (credited to their photographers)
+- [Aviation Weather Center](https://aviationweather.gov): METAR data
+- [wiedehopf/tar1090-db](https://github.com/wiedehopf/tar1090-db): aircraft database used by the watch list
 - [Jxck-S/airline-logos](https://github.com/Jxck-S/airline-logos): airline logos, downloaded on demand. Logos are trademarks of their respective airlines and are used for identification only.
 - Map imagery: Esri World Imagery and World Boundaries and Places (Esri, Maxar, Earthstar Geographics and the GIS User Community). Check Esri's terms of use for your use case.
 
