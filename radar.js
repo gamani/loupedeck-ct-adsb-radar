@@ -286,7 +286,7 @@ const airportByIcao = icao => airports.find(a => a.icao === icao)
 // Is the aircraft flying an ILS-like final approach? (geometry from ADS-B position, not the real ILS signal)
 const ilsCache = new Map()
 function approachOf(a) {
-  const k = `${a.hex}|${a.lat}|${a.lon}|${a.alt}`
+  const k = `${a.hex}|${a.lat}|${a.lon}|${a.alt}|${a.track}|${a.vrate}` // everything the result depends on
   if (ilsCache.has(k)) return ilsCache.get(k)
   let best = null
   if (a.alt != null && !a.ground && a.track != null && a.alt < 12000 && (a.vrate ?? 0) < 500) {
@@ -320,7 +320,7 @@ function approachOf(a) {
 // otherwise from a climb / descent below FL200 within 60 km of the nearest airport with scheduled flights.
 const linkCache = new Map()
 function airportLink(a) {
-  const info = getInfo(a), k = `${a.hex}|${a.lat}|${a.lon}|${a.alt}|${info?.at}`
+  const info = getInfo(a), k = `${a.hex}|${a.lat}|${a.lon}|${a.alt}|${a.track}|${a.vrate}|${info?.at}`
   if (linkCache.has(k)) return linkCache.get(k)
   let res = null
   const app = approachOf(a), vr = a.vrate ?? 0
@@ -1309,7 +1309,7 @@ function airportStats() {
     const l = airportLink(a); if (!l) continue
     const e = m.get(l.ap.icao) || { n: 0, app: 0, arr: 0, dep: 0, next: null }
     e.n++; e[l.kind]++
-    if (l.kind === 'app') { const p = approachOf(a); if (!e.next || p.eta < e.next.eta) e.next = { name: a.flight || a.hex.toUpperCase(), eta: p.eta } }
+    if (l.kind === 'app') { const p = approachOf(a); if (p && (!e.next || p.eta < e.next.eta)) e.next = { name: a.flight || a.hex.toUpperCase(), eta: p.eta } }
     m.set(l.ap.icao, e)
   }
   return m
