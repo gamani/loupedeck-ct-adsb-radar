@@ -19,7 +19,7 @@ The round wheel screen becomes a radar scope over a satellite map, the touch pan
 
 **Touch panel (12 keys)**
 - **List**: the 12 nearest aircraft, one per key: callsign, flight level with climb / descent marker, route (or ILS runway), distance, airline logo (country code when there is none).
-- **Detail card**: tap an aircraft and the 12 keys become its card: from / to, type and registration, altitude, speed, vertical speed, heading dial, distance, squawk, airline with its logo. When a **photo** of the aircraft exists on [Planespotters.net](https://www.planespotters.net), it fills two keys (with the photographer's credit); tap it to open its page in your browser.
+- **Detail card**: tap an aircraft and the 12 keys become its card: from / to, type and registration, altitude, speed, vertical speed, heading dial, distance, squawk, airline with its logo. When a **photo** of the aircraft exists on [Planespotters.net](https://www.planespotters.net) (or, failing that, on [Airport-Data.com](https://airport-data.com)), it fills two keys (with the photographer's credit); tap it to open its page in your browser.
 - **Airport picker**: button 2 lists the airports around you, 10 per page (airports with scheduled flights first, nearest first), with their runways, distance and a live traffic badge: aircraft on final (with the next landing and its time to touchdown), arrivals and departures. Tap one to jump to it.
 
 ![Detail card](docs/screenshots/detail.png)
@@ -81,7 +81,7 @@ These deviations are computed from ADS-B data (position once per second, altitud
 | E or Home (○) | Back to home: leaves airport mode, stops following |
 | Tap a tile | Open the aircraft card and follow it on the radar |
 | Tap "Back" | Back to the list, the radar returns home |
-| Tap the photo (aircraft card) | Open the photo's page on Planespotters.net in your browser |
+| Tap the photo (aircraft card) | Open the photo's page (Planespotters.net or Airport-Data.com) in your browser |
 | Tap an aircraft on the wheel | Select and follow it |
 | Tap an airport on the wheel | Select that airport (centrelines) |
 | Tap an airport in the picker | Select it and switch to airport mode |
@@ -149,7 +149,7 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 - Military detection is a heuristic based on known ICAO address blocks and callsign prefixes.
 - Overflight prediction assumes straight-line flight, so turning or approaching aircraft may deviate.
 - Airline logos: the airline is read from the callsign (its first three letters are the ICAO airline code). Each logo is shown as a round badge, downloaded once from [Jxck-S/airline-logos](https://github.com/Jxck-S/airline-logos) and cached in `logos/`. No logo is shipped with this project, and the demo screenshots are rendered without them. Set `logos.enabled` to `false` to turn them off.
-- Aircraft photos come from the [Planespotters.net photo API](https://www.planespotters.net/photo/api) and follow its terms: the photographer is credited on the photo, a tap opens the photo's page, and the image is only kept in memory while it is on screen (nothing is stored, and the demo screenshots contain no photo).
+- Aircraft photos come from the [Planespotters.net photo API](https://www.planespotters.net/photo/api), with the [Airport-Data.com thumbnail API](https://airport-data.com/api/doc) as a fallback, and follow the Planespotters terms for both: the photographer is credited on the photo, a tap opens the photo's page, and the image is only kept in memory while it is on screen (nothing is stored, and the demo screenshots contain no photo).
 - Airport weather is the latest METAR from the [Aviation Weather Center API](https://aviationweather.gov/data/api/), requested for the selected airport only, every 10 minutes at most.
 - The watch list resolves types and registrations with the [tar1090 aircraft database](https://github.com/wiedehopf/tar1090-db), downloaded once a month into `aircraft-db.csv.gz`, so it also works with receivers that do not send aircraft types.
 - Reception statistics are kept in `stats.json` (today's figures and your all-time range record). A position only counts for the range once the aircraft has been tracked for a few seconds, to ignore decoding errors.
@@ -166,7 +166,7 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 - [adsb.lol](https://adsb.lol): route data
 - [OurAirports](https://ourairports.com): airport and runway data (public domain)
 - [adsbdb.com](https://www.adsbdb.com): aircraft, airline and fallback route data
-- [Planespotters.net](https://www.planespotters.net): aircraft photos (credited to their photographers)
+- [Planespotters.net](https://www.planespotters.net) and [Airport-Data.com](https://airport-data.com): aircraft photos (credited to their photographers)
 - [Aviation Weather Center](https://aviationweather.gov): METAR data
 - [wiedehopf/tar1090-db](https://github.com/wiedehopf/tar1090-db): aircraft database used by the watch list
 - [Jxck-S/airline-logos](https://github.com/Jxck-S/airline-logos): airline logos, downloaded on demand. Logos are trademarks of their respective airlines and are used for identification only.

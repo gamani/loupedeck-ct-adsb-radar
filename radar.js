@@ -532,7 +532,7 @@ function drawLogo(g, logo, x, y, size) {
   g.strokeStyle = 'rgba(255,255,255,0.2)'; g.lineWidth = 1; g.beginPath(); g.arc(cx, cy, size / 2 - 0.5, 0, Math.PI * 2); g.stroke() // hairline so dark logos stand out from the tile
 }
 
-// ---------- Aircraft photo (planespotters.net public API) ----------
+// ---------- Aircraft photo (planespotters.net public API, then airport-data.com when it has none) ----------
 // Their terms: a descriptive User-Agent, the photographer credited next to the image, the image linked to its
 // Planespotters page (tapping the photo opens that page in the browser), the image fetched from the returned URL
 // and held in memory only while it is on screen, the JSON answer cached for 24 hours at most.
@@ -557,7 +557,13 @@ async function loadPhoto(hex) {
       const r = await fetch(`https://api.planespotters.net/pub/photos/hex/${hex.toUpperCase()}`, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) })
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       const ph = (await r.json())?.photos?.[0]
-      m = { at: Date.now(), ...(ph?.thumbnail?.src ? { src: ph.thumbnail.src, credit: ph.photographer || '', link: ph.link } : {}) }
+      m = { at: Date.now(), ...(ph?.thumbnail?.src ? { src: ph.thumbnail.src, credit: ph.photographer || '', link: ph.link, site: 'planespotters.net' } : {}) }
+      if (!m.src) { // nothing on Planespotters: the airport-data.com thumbnail API, with the same courtesies (credit, link, nothing stored)
+        const r2 = await fetch(`https://airport-data.com/api/ac_thumb.json?m=${hex.toUpperCase()}&n=1`, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) })
+        if (!r2.ok && r2.status !== 404) throw new Error(`airport-data HTTP ${r2.status}`)
+        const ad = r2.ok ? (await r2.json().catch(() => null))?.data?.[0] : null
+        if (ad?.image) m = { at: Date.now(), src: ad.image, credit: ad.photographer || '', link: ad.link, site: 'airport-data.com' }
+      }
       photoMeta.set(hex, m)
       if (photoMeta.size > 300) photoMeta.delete(photoMeta.keys().next().value)
     }
@@ -565,7 +571,7 @@ async function loadPhoto(hex) {
       const r = await fetch(m.src, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) })
       if (!r.ok) throw new Error(`image HTTP ${r.status}`)
       const img = await loadImage(Buffer.from(await r.arrayBuffer()))
-      if (hex === selectedHex) { photoShown = { hex, img, credit: m.credit, link: m.link }; refreshCenterNow(); logOnce('photo', 'Aircraft photos: working (planespotters.net)') }
+      if (hex === selectedHex) { photoShown = { hex, img, credit: m.credit, link: m.link, site: m.site }; refreshCenterNow(); logOnce(`photo-${m.site}`, `Aircraft photos: working (${m.site})`) }
     }
   } catch (e) {
     photoMeta.set(hex, { at: Date.now() - 6 * 3600000 + 5 * 60000 }) // try again in 5 minutes
@@ -573,10 +579,10 @@ async function loadPhoto(hex) {
   }
   photoBusy = false
 }
-function openPhotoPage(link) { // only ever opens a planespotters.net page, without going through a shell
+function openPhotoPage(link) { // only ever opens a page of one of the two photo sites, without going through a shell
   try {
     const u = new URL(link)
-    if (u.protocol !== 'https:' || !/(^|\.)planespotters\.net$/.test(u.hostname)) return
+    if (u.protocol !== 'https:' || !/(^|\.)(planespotters\.net|airport-data\.com)$/.test(u.hostname)) return
     const [cmd, args] = process.platform === 'win32' ? ['rundll32', ['url.dll,FileProtocolHandler', u.href]] : process.platform === 'darwin' ? ['open', [u.href]] : ['xdg-open', [u.href]]
     execFile(cmd, args, () => {})
   } catch {}
@@ -1173,7 +1179,7 @@ function drawAircraftTile(g, i, a, refPoint) {
   glyph(g, { track: a.track, category: 'A3' }, b.r - 4, b.y + 67, { color: UI.sub, outline: null, scale: 0.6 })
 }
 
-// Photo across tiles i and i + 1, with the photographer credit the Planespotters terms ask for
+// Photo across tiles i and i + 1, with the photographer credit and the name of the site it comes from
 function drawPhotoTiles(g, i, ph) {
   const x = (i % 4) * TILE + PAD, y = Math.floor(i / 4) * TILE + PAD, w = TILE + TW, h = TW, img = ph.img
   g.save(); g.beginPath(); g.roundRect(x, y, w, h, 8); g.clip()
@@ -1186,7 +1192,7 @@ function drawPhotoTiles(g, i, ph) {
   g.restore()
   g.strokeStyle = UI.line; g.lineWidth = 1; g.beginPath(); g.roundRect(x + 0.5, y + 0.5, w - 1, h - 1, 7.5); g.stroke()
   txt(g, `© ${ph.credit}`, x + 7, y + h - 6, { px: 8, weight: 600, color: '#eef2f5', max: TW - 12 })
-  txt(g, 'planespotters.net', x + w - 7, y + h - 6, { px: 8, weight: 600, color: '#c3ccd3', align: 'right' })
+  txt(g, ph.site, x + w - 7, y + h - 6, { px: 8, weight: 600, color: '#c3ccd3', align: 'right' })
 }
 
 function drawInfoTile(g, i, label, value, { color = UI.text, sub = '', sub2 = '', px = 21, fill, border } = {}) {
