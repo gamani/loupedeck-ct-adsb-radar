@@ -82,6 +82,7 @@
   "airports": {
     "enabled": true,
     "radius_km": 350,
+    "small_radius_km": 100,
     "types": [
       "large_airport",
       "medium_airport"

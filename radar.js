@@ -212,9 +212,10 @@ function overflight(a) {
 const nextOverflight = () => aircraft.map(a => ({ a, o: overflight(a) })).filter(x => x.o).sort((p, q) => p.o.t - q.o.t)[0] || null
 
 // ---------- Airports, runways and ILS-like approach detection (data: OurAirports, public domain) ----------
-const AP = Object.assign({ enabled: true, radius_km: 350, types: ['large_airport', 'medium_airport'], min_runway_ft: 3000, approach_km: 18, default: '' }, cfg.airports || {})
+const AP = Object.assign({ enabled: true, radius_km: 350, small_radius_km: 100, types: ['large_airport', 'medium_airport'], min_runway_ft: 3000, approach_km: 18, default: '' }, cfg.airports || {})
 const AP_CACHE = new URL(DEMO ? './airports-cache-demo.json' : './airports-cache.json', import.meta.url)
 const OA = 'https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/'
+let airfields = []        // small airfields, only drawn on the scope: same shape, no approach logic
 let airports = []         // [{ icao, iata, name, city, type, lat, lon, elev, runways: [{ a: {...}, b: {...} }], ends: [approach ends] }]
 let selAirport = null     // selected airport (icao)
 let defaultAirport = null // airport selected at start, restored when going back home
@@ -239,7 +240,7 @@ async function loadAirports() {
   if (!AP.enabled) return
   try {
     const c = JSON.parse(readFileSync(AP_CACHE))
-    if (c.v === 2 && Math.abs(c.lat - cfg.lat) < 0.5 && Math.abs(c.lon - cfg.lon) < 0.5 && c.radius >= AP.radius_km && JSON.stringify(c.types) === JSON.stringify(AP.types)) airports = c.airports
+    if (c.v === 3 && Math.abs(c.lat - cfg.lat) < 0.5 && Math.abs(c.lon - cfg.lon) < 0.5 && c.radius >= AP.radius_km && c.small_radius === AP.small_radius_km && JSON.stringify(c.types) === JSON.stringify(AP.types)) { airports = c.airports; airfields = c.airfields || [] }
   } catch {}
   if (!airports.length) {
     console.log('Downloading airport and runway data (OurAirports, once)...')
@@ -248,21 +249,26 @@ async function loadAirports() {
     const home = { lat: cfg.lat, lon: cfg.lon }
     const byId = new Map()
     for (const a of parseCSV(aCsv)) {
-      if (!AP.types.includes(a.type)) continue
+      const code = a.icao_code || a.gps_code || a.ident
+      // Small airfields (grass strips included) are only drawn on the scope, around home, when they have a real ICAO code
+      const minor = a.type === 'small_airport' && !AP.types.includes(a.type)
+      if (minor ? !/^[A-Z]{4}$/.test(code) : !AP.types.includes(a.type)) continue
       const p = { lat: +a.latitude_deg, lon: +a.longitude_deg }
-      if (kmBetween(home, p) > AP.radius_km) continue
-      byId.set(a.id, { icao: a.icao_code || a.gps_code || a.ident, iata: a.iata_code || '', name: a.name, city: a.municipality, type: a.type, sched: a.scheduled_service === 'yes', ...p, elev: +a.elevation_ft || 0, runways: [] })
+      if (kmBetween(home, p) > (minor ? AP.small_radius_km : AP.radius_km)) continue
+      byId.set(a.id, { icao: code, iata: a.iata_code || '', name: a.name, city: a.municipality, type: a.type, sched: a.scheduled_service === 'yes', minor, ...p, elev: +a.elevation_ft || 0, runways: [] })
     }
     const paved = /ASP|CON|PEM|BIT|TAR|ASF|PAV|HARD/i
     for (const w of parseCSV(rCsv)) {
       const ap = byId.get(w.airport_ref)
-      if (!ap || w.closed === '1' || +w.length_ft < AP.min_runway_ft || !paved.test(w.surface || '') || !w.le_latitude_deg || !w.he_latitude_deg) continue
+      if (!ap || w.closed === '1' || !w.le_latitude_deg || !w.he_latitude_deg) continue
+      if (!ap.minor && (+w.length_ft < AP.min_runway_ft || !paved.test(w.surface || ''))) continue
       const end = (id, la, lo, el, hd, disp) => ({ id, lat: +la, lon: +lo, elev: el ? +el : ap.elev, hdg: hd ? +hd : null, disp: disp ? +disp * 0.0003048 : 0 })
       ap.runways.push({ a: end(w.le_ident, w.le_latitude_deg, w.le_longitude_deg, w.le_elevation_ft, w.le_heading_degT, w.le_displaced_threshold_ft),
                         b: end(w.he_ident, w.he_latitude_deg, w.he_longitude_deg, w.he_elevation_ft, w.he_heading_degT, w.he_displaced_threshold_ft) })
     }
-    airports = [...byId.values()].filter(a => a.runways.length)
-    try { writeFileSync(AP_CACHE, JSON.stringify({ v: 2, lat: cfg.lat, lon: cfg.lon, radius: AP.radius_km, types: AP.types, airports })) } catch {}
+    airports = [...byId.values()].filter(a => !a.minor && a.runways.length)
+    airfields = [...byId.values()].filter(a => a.minor)
+    try { writeFileSync(AP_CACHE, JSON.stringify({ v: 3, lat: cfg.lat, lon: cfg.lon, radius: AP.radius_km, small_radius: AP.small_radius_km, types: AP.types, airports, airfields })) } catch {}
   }
   // Approach ends: landing on end X means flying X's heading towards X's (displaced) threshold
   for (const ap of airports) {
@@ -279,7 +285,7 @@ async function loadAirports() {
   const home = { lat: cfg.lat, lon: cfg.lon }
   for (const ap of airports) { ap.homeKm = kmBetween(home, ap); ap.homeBrg = bearing(home, ap) }
   airports.sort((p, q) => (q.sched - p.sched) || p.homeKm - q.homeKm) // picker order: airports with scheduled flights first, nearest first
-  console.log(`Airports loaded: ${airports.length}${selAirport ? `, selected ${selAirport}` : ''}`)
+  console.log(`Airports loaded: ${airports.length}${airfields.length ? ` and ${airfields.length} small airfields` : ''}${selAirport ? `, selected ${selAirport}` : ''}`)
 }
 const airportByIcao = icao => airports.find(a => a.icao === icao)
 
@@ -844,26 +850,48 @@ function pill(g, s, x, y, { px = 9, fg = UI.text, bg = '#1a242d', align = 'left'
   return w
 }
 
-// Aircraft glyphs (nose up at track 0)
-const PLANE = [[0, -8], [1.3, -5.6], [1.3, -1.6], [8, 3], [8, 4.7], [1.3, 2.4], [1.3, 5.6], [3.7, 7.6], [3.7, 8.8], [0, 7.8]]
+// Aircraft glyphs (nose up at track 0), one silhouette per kind of aircraft. Each outline is the right half, mirrored.
+const SHAPES = {
+  liner: { k: 0.84, pts: [[0, -8], [1.3, -5.6], [1.3, -1.6], [8, 3], [8, 4.7], [1.3, 2.4], [1.3, 5.6], [3.7, 7.6], [3.7, 8.8], [0, 7.8]] },                      // airliner: swept wings
+  heavy: { k: 1.0, pts: [[0, -9.5], [1.7, -7], [1.7, -2.4], [9.8, 3.2], [9.8, 5.2], [1.7, 2.8], [1.7, 6.4], [4.6, 8.6], [4.6, 10], [0, 8.9]], pods: [[3.1, -3.3], [6.2, -1.2]] }, // wide-body: bigger, four engines
+  small: { k: 0.82, pts: [[0, -7.6], [1, -5.2], [1, 0.4], [6.4, 3.8], [6.4, 5], [1, 3.4], [1, 4], [2.4, 4], [2.4, 6.6], [1, 6.6], [1, 7.2], [3.4, 8.4], [3.4, 9.4], [0, 8.8]] }, // business or regional jet: rear engines, T-tail
+  light: { k: 0.86, pts: [[0, -6.2], [1, -4.8], [1, -2.6], [8.2, -2.6], [8.2, 0.2], [1, 0.2], [1, 5], [3.4, 5], [3.4, 7], [0, 7]] },                                 // light aircraft: straight wing
+  fast: { k: 0.84, pts: [[0, -8.4], [1, -4.4], [1.4, 0], [6.2, 6], [6.2, 7.4], [1.7, 6.4], [1.2, 8.2], [0, 7.8]] },                                               // high performance: delta
+}
+// No emitter category (Mode S only, MLAT): go by the aircraft type when it is known
+const HELI_TYPES = /^(EC\d\d|H1[2-7]\d|AS[3-6]\d|A1[0-9]9|AW\d|R22|R44|R66|B06|B4[0-3]\d|B212|B412|S76|S92|NH90|TIGR|UH1|H60|H47|H53|G2CA|CABR|LAMA|ALO[23]|GAZL|PUMA|EH10|MI\d)/
+const HEAVY_TYPES = /^(A33|A34|A35|A38|B74|B76|B77|B78|MD11|DC10|IL76|IL96|A124|A225|AN22|C17|C5M|A3ST|A337|BLCF|K35|A400|E3)/
+const LIGHT_TYPES = /^(C1[2-9]\d|C2[01]\d|P28|PA\d|P32|P46|DA[24]\d|DR[2-4]\d|SR2\d|TB[12]\d|TB9|RV\d|M20|BE3[356]|BE23|AA5|TOBA|ULAC|GLID|DV20|AT3|WT9|CP30|D11|J3|PC6|PC12)/
+function iconClass(a) {
+  const c = a.category, t = getInfo(a)?.aircraft?.type || ''
+  if (c === 'A7' || HELI_TYPES.test(t)) return 'heli'
+  if (c === 'A5') return 'heavy'
+  if (c === 'A1' || c === 'B1' || c === 'B4') return 'light'
+  if (c === 'A2') return 'small'
+  if (c === 'A6') return 'fast'
+  if (c === 'A3' || c === 'A4') return 'liner'
+  return HEAVY_TYPES.test(t) ? 'heavy' : LIGHT_TYPES.test(t) ? 'light' : 'liner'
+}
 function glyph(g, a, x, y, { color, outline = 'rgba(0,0,0,0.85)', scale = 1, alpha = 1 } = {}) {
-  const s = scale * (a.category === 'A5' ? 1.02 : a.category === 'A1' || a.category === 'A2' ? 0.7 : 0.84)
+  const cls = a.cls || iconClass(a), shape = SHAPES[cls], s = scale * (shape ? shape.k : 0.84)
   g.save(); g.translate(x, y); g.globalAlpha = alpha; g.lineJoin = 'round'
   g.beginPath()
   if (a.track == null) { g.moveTo(0, -4.5 * s); g.lineTo(4.5 * s, 0); g.lineTo(0, 4.5 * s); g.lineTo(-4.5 * s, 0); g.closePath() } // no track: diamond
-  else if (a.category === 'A7') { // helicopter: body + rotor disc
+  else if (cls === 'heli') { // helicopter: body + rotor disc
     g.rotate(toRad(a.track))
     g.moveTo(0, -4 * s); g.lineTo(2.4 * s, -1 * s); g.lineTo(1 * s, 3 * s); g.lineTo(0.7 * s, 8 * s); g.lineTo(-0.7 * s, 8 * s); g.lineTo(-1 * s, 3 * s); g.lineTo(-2.4 * s, -1 * s); g.closePath()
   } else {
+    const P = shape.pts
     g.rotate(toRad(a.track))
-    g.moveTo(PLANE[0][0] * s, PLANE[0][1] * s)
-    for (let i = 1; i < PLANE.length; i++) g.lineTo(PLANE[i][0] * s, PLANE[i][1] * s)
-    for (let i = PLANE.length - 2; i > 0; i--) g.lineTo(-PLANE[i][0] * s, PLANE[i][1] * s)
+    g.moveTo(P[0][0] * s, P[0][1] * s)
+    for (let i = 1; i < P.length; i++) g.lineTo(P[i][0] * s, P[i][1] * s)
+    for (let i = P.length - 2; i > 0; i--) g.lineTo(-P[i][0] * s, P[i][1] * s)
     g.closePath()
+    for (const [px, py] of shape.pods || []) { g.rect(px * s, py * s, 1.5 * s, 3 * s); g.rect((-px - 1.5) * s, py * s, 1.5 * s, 3 * s) } // engines ahead of the wing
   }
   if (outline) { g.lineWidth = 2.2; g.strokeStyle = outline; g.stroke() }
   g.fillStyle = color; g.fill()
-  if (a.category === 'A7' && a.track != null) { g.strokeStyle = color; g.lineWidth = 1; g.beginPath(); g.arc(0, -0.5 * s, 6 * s, 0, Math.PI * 2); g.stroke() }
+  if (cls === 'heli' && a.track != null) { g.strokeStyle = color; g.lineWidth = 1; g.beginPath(); g.arc(0, -0.5 * s, 6 * s, 0, Math.PI * 2); g.stroke() }
   g.restore()
 }
 
@@ -1071,6 +1099,22 @@ function drawAirports(g, occupied) {
   if (!airports.length) return
   const range = RANGES[rangeIdx]
   const inUse = new Set(aircraft.map(approachOf).filter(Boolean).map(x => `${x.ap.icao}|${x.end.id}`))
+  if (range <= 50) for (const ap of airfields) { // small airfields: runway to scale and code when zoomed in, a small ring otherwise
+    const [x, y] = plotXY(ap)
+    if (!inDisc(x, y, 116)) continue
+    const col = 'rgba(190,225,235,0.8)'
+    g.lineCap = 'round'
+    if (range <= 25 && ap.runways.length) for (const w of ap.runways) {
+      const [ax, ay] = plotXY(w.a), [bx, by] = plotXY(w.b)
+      g.strokeStyle = 'rgba(0,0,0,0.8)'; g.lineWidth = 4; g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.stroke()
+      g.strokeStyle = col; g.lineWidth = 1.6; g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.stroke()
+    } else {
+      g.strokeStyle = 'rgba(0,0,0,0.8)'; g.lineWidth = 3; g.beginPath(); g.arc(x, y, 2.5, 0, Math.PI * 2); g.stroke()
+      g.strokeStyle = col; g.lineWidth = 1.2; g.beginPath(); g.arc(x, y, 2.5, 0, Math.PI * 2); g.stroke()
+    }
+    g.lineCap = 'butt'
+    if (range <= 25 && inDisc(x, y, 100)) { occupied.push({ x: x - 5, y: y - 5, w: 10, h: 10 }); placeLabel(g, ap.icao, x, y, occupied, { fg: '#cfe3ea', px: 8 }) }
+  }
   const shown = airports.filter(ap => { const [x, y] = plotXY(ap); return inDisc(x, y, 140) && (ap.icao === selAirport || ap.type === 'large_airport' || range <= 100) })
   for (const ap of shown.sort((p, q) => (p.icao === selAirport) - (q.icao === selAirport))) {
     const [x, y] = plotXY(ap), sel = ap.icao === selAirport
@@ -1176,7 +1220,7 @@ function drawAircraftTile(g, i, a, refPoint) {
   const mil = isMilitary(a), logo = logoOf(a)
   if (logo) return drawLogo(g, logo, b.r - 21, b.y + 57, 22) // the airline logo replaces the country code
   txt(g, mil ? T.mil : countryOf(a), b.r - 12, b.y + 71, { px: 9, weight: 700, color: mil ? '#8fe05a' : UI.mute, align: 'right' })
-  glyph(g, { track: a.track, category: 'A3' }, b.r - 4, b.y + 67, { color: UI.sub, outline: null, scale: 0.6 })
+  glyph(g, { track: a.track, cls: iconClass(a) }, b.r - 4, b.y + 67, { color: UI.sub, outline: null, scale: 0.6 })
 }
 
 // Photo across tiles i and i + 1, with the photographer credit and the name of the site it comes from
@@ -1321,7 +1365,7 @@ function airportStats() {
   return m
 }
 const runwayNames = ap => ap.runways.map(w => `${w.a.id}/${w.b.id}`).join('  ')
-function drawBearing(g, x, y, brg, color) { glyph(g, { track: brg, category: 'A1' }, x, y, { color, outline: null, scale: 0.75 }) }
+function drawBearing(g, x, y, brg, color) { glyph(g, { track: brg, cls: 'liner' }, x, y, { color, outline: null, scale: 0.62 }) }
 
 function drawAirportTile(g, i, ap, st) {
   const sel = ap.icao === selAirport, big = ap.type === 'large_airport'

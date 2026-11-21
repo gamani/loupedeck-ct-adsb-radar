@@ -12,7 +12,7 @@ The round wheel screen becomes a radar scope over a satellite map, the touch pan
 
 **Wheel screen (radar scope)**
 - Satellite map with borders and place names under a compass rose, range rings and a radar sweep. The view can **follow** an aircraft.
-- Aircraft silhouettes coloured by altitude (tar1090-style scale), fading **trails**, callsign labels that avoid each other.
+- Aircraft silhouettes coloured by altitude (tar1090-style scale), fading **trails**, callsign labels that avoid each other. The silhouette tells the kind of aircraft: light aircraft, business or regional jet, airliner, wide-body, fast jet, helicopter (from the ADS-B emitter category, or from the aircraft type when the category is not sent).
 - **Spotlight banner**: one aircraft at a time with airline logo, callsign, flight level and route, cycling through the nearest ones.
 - **Overflight prediction**: aircraft about to pass close to your home get a dashed projected path and a countdown ("Overhead 3 min").
 - **Distress ring**: aircraft squawking 7500 / 7600 / 7700 get a pulsing red ring and take over the banner.
@@ -27,7 +27,7 @@ The round wheel screen becomes a radar scope over a satellite map, the touch pan
 ![Airport picker](docs/screenshots/airports.png)
 
 **Airports and ILS-like approaches**
-- Airports are drawn on the scope, with runways to scale when zoomed in (data: [OurAirports](https://ourairports.com), downloaded once and cached).
+- Airports are drawn on the scope, with runways to scale when zoomed in (data: [OurAirports](https://ourairports.com), downloaded once and cached). Small airfields around you, grass strips included, appear from the 50 km range down, with their runway and ICAO code at 25 km and below.
 - The selected airport shows the extended centreline of each runway (5 km ticks); the runway in use is highlighted when traffic is established on it.
 - Aircraft on final approach are detected from their position, track and altitude (aligned within 3°, on a 1.5 to 5° glide path): tiles and banner show e.g. `ILS 23 SXB`.
 - In the detail card, an approach adds a cockpit-style **deviation indicator** (localizer and glide slope needles), the runway, the distance to the threshold, the time to touchdown and the actual glide angle.
@@ -120,7 +120,7 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 | `tar1090_url` | | Base URL of your tar1090 / dump1090 web interface |
 | `lat`, `lon` | | Home position |
 | `airport` | | `{ name, lat, lon, radius_km, below_ft }` for the airport filter |
-| `airports` | | `enabled`, `radius_km` (area loaded), `types` (OurAirports types), `min_runway_ft`, `approach_km` (centreline length), `mode_range_km` (range used by airport mode), `default` (ICAO or IATA of the airport selected at start) |
+| `airports` | | `enabled`, `radius_km` (area loaded), `small_radius_km` (area loaded for small airfields, 0 to hide them), `types` (OurAirports types), `min_runway_ft`, `approach_km` (centreline length), `mode_range_km` (range used by airport mode), `default` (ICAO or IATA of the airport selected at start) |
 | `photos` | | `enabled` (default `true`): aircraft photo in the detail card |
 | `weather` | | `enabled` (default `true`), `refresh_min` (default `10`): METAR of the selected airport |
 | `watch` | | Watch list: `enabled`, `types` (ICAO type codes such as `A124`, `A388`), `registrations`, `hex`, `callsigns` (prefixes), `max_km` (0 = any distance) |
