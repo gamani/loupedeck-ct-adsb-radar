@@ -63,7 +63,7 @@ These deviations are computed from ADS-B data (position once per second, altitud
 | Control | Turn | Press |
 |---|---|---|
 | Big wheel | Range (10 / 25 / 50 / 100 / 200 / 300 km); pages in the airport picker | Cycle the selected aircraft; close the picker |
-| Top-left knob | Minimum altitude filter | Reset |
+| Top-left knob | Minimum altitude filter (shown as a chip on the scope while active) | Reset |
 | Middle-left knob | Filter: all, military, helicopters, low altitude, airport, heavies, overhead | Reset to all |
 | Bottom-left knob | Screen brightness | |
 | Top-right knob | Number of labels on the radar | Reset |

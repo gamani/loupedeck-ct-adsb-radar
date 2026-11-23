@@ -1145,6 +1145,7 @@ function drawChips(g) {
   if (selectedHex && follow) modes.push({ text: T.follow, color: UI.green })
   if (airportMode && selAirport) { const ap = airportByIcao(selAirport); modes.push({ text: ap?.iata || selAirport, color: UI.cyan }) }
   if (filterIdx) modes.push({ text: FILTERS[filterIdx].name, color: FILTERS[filterIdx].color })
+  if (minAltFt) modes.push({ text: `≥ ${minAltFt / 1000}k ft`, color: UI.amber }) // an altitude floor hides aircraft: keep it in sight
   if (modes.length) row(modes, 39)
 }
 
