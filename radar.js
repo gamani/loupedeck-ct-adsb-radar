@@ -6,7 +6,7 @@
 import { discover } from 'loupedeck'
 import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, createReadStream } from 'node:fs'
-import { createGunzip } from 'node:zlib'
+import { createGunzip, gunzipSync } from 'node:zlib'
 import { createInterface } from 'node:readline'
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
@@ -138,7 +138,7 @@ async function poll() {
       })
       .sort((a, b) => a.d - b.d)
     const now = Date.now()
-    for (const a of aircraft) a.watch = watched(a)
+    for (const a of aircraft) { a.watch = watched(a); a.cls = iconClass(a) }
     for (const a of aircraft) {
       if (a.seenPos > 15) continue
       const tr = trails.get(a.hex) || []
@@ -359,10 +359,10 @@ function airportTraffic() {
 const FILTERS = [
   { name: T.filters[0], color: '#9fb0bd', test: () => true },
   { name: T.filters[1], color: '#8fe05a', test: a => isMilitary(a) },
-  { name: T.filters[2], color: '#e58bff', test: a => a.category === 'A7' || /^H/.test(a.type) },
+  { name: T.filters[2], color: '#e58bff', test: a => (a.cls || iconClass(a)) === 'heli' },
   { name: T.filters[3], color: '#ffb629', test: a => !a.ground && a.alt != null && a.alt < 10000 },
   AIRPORT && { name: AIRPORT.name, color: '#39d5ff', test: a => a.alt != null && a.alt < AIRPORT.below_ft && kmBetween(a, AIRPORT) < AIRPORT.radius_km },
-  { name: T.filters[5], color: '#ffe14d', test: a => a.category === 'A5' },
+  { name: T.filters[5], color: '#ffe14d', test: a => (a.cls || iconClass(a)) === 'heavy' },
   { name: T.filters[6], color: '#ffffff', test: a => a.d < 8 },
 ].filter(Boolean)
 
@@ -643,22 +643,58 @@ const watchTypes = new Set(WATCH.types.map(plain)), watchRegs = new Set(WATCH.re
 const watchHex = new Set(WATCH.hex.map(h => String(h).toLowerCase())), watchCalls = WATCH.callsigns.map(plain).filter(Boolean)
 const watchDb = new Map() // hex -> label, for every aircraft of the database matching a watched type or registration
 const DB_FILE = new URL('./aircraft-db.csv.gz', import.meta.url)
-async function loadWatchDb() {
-  if (!WATCH.enabled || DEMO || (!watchTypes.size && !watchRegs.size)) return
+// The same database gives the type of every known aircraft: one row per aircraft, kept as two compact arrays
+// (sorted hex codes and an index into the list of type designators) so that half a million rows cost a few megabytes.
+const TYPES_FILE = new URL('./aircraft-types.json.gz', import.meta.url)
+const TDB = 'https://raw.githubusercontent.com/wiedehopf/tar1090-db/'
+let dbHex = new Uint32Array(0), dbTypeIdx = new Uint16Array(0), dbTypes = []
+let typeInfo = {} // type designator -> [name, ICAO description such as L2J, wake category]
+async function loadAircraftDb() {
+  if (DEMO || cfg.aircraft_db === false) return
   try {
-    if (!existsSync(DB_FILE) || Date.now() - statSync(DB_FILE).mtimeMs > 30 * 86400000) {
-      console.log('Downloading the aircraft database for the watch list (tar1090-db, once a month)...')
-      const r = await fetch('https://raw.githubusercontent.com/wiedehopf/tar1090-db/csv/aircraft.csv.gz', { signal: AbortSignal.timeout(120000) })
-      if (r.ok) writeFileSync(DB_FILE, Buffer.from(await r.arrayBuffer()))
-      else if (!existsSync(DB_FILE)) throw new Error(`HTTP ${r.status}`)
+    const stale = f => !existsSync(f) || Date.now() - statSync(f).mtimeMs > 30 * 86400000
+    const get = async (url, file) => {
+      const r = await fetch(url, { signal: AbortSignal.timeout(120000) })
+      if (r.ok) writeFileSync(file, Buffer.from(await r.arrayBuffer()))
+      else if (!existsSync(file)) throw new Error(`HTTP ${r.status}`)
     }
+    if (stale(DB_FILE) || stale(TYPES_FILE)) {
+      console.log('Downloading the aircraft database (tar1090-db, once a month)...')
+      await get(TDB + 'csv/aircraft.csv.gz', DB_FILE)
+      await get(TDB + 'master/db/icao_aircraft_types2.js', TYPES_FILE)
+    }
+    const raw = readFileSync(TYPES_FILE)
+    typeInfo = JSON.parse(raw[0] === 0x1f ? gunzipSync(raw) : raw)
+    const seen = new Map(), types = []
+    let hexes = new Uint32Array(600000), idxs = new Uint16Array(600000), n = 0, sorted = true, prev = -1
     for await (const line of createInterface({ input: createReadStream(DB_FILE).pipe(createGunzip()) })) { // hex;registration;type;flags;description
-      const f = line.split(';')
-      if (watchTypes.has(f[2]) || (f[1] && watchRegs.has(plain(f[1])))) watchDb.set(f[0].toLowerCase(), [f[2], f[1]].filter(Boolean).join(' '))
+      const f = line.split(';'), t = f[2]
+      if (WATCH.enabled && (watchTypes.has(t) || (f[1] && watchRegs.has(plain(f[1]))))) watchDb.set(f[0].toLowerCase(), [t, f[1]].filter(Boolean).join(' '))
+      const h = parseInt(f[0], 16)
+      if (!t || !(h >= 0)) continue
+      let i = seen.get(t)
+      if (i === undefined) { i = types.length; types.push(t); seen.set(t, i) }
+      if (n === hexes.length) { const h2 = new Uint32Array(n * 2), i2 = new Uint16Array(n * 2); h2.set(hexes); i2.set(idxs); hexes = h2; idxs = i2 }
+      if (h <= prev) sorted = false
+      prev = h; hexes[n] = h; idxs[n++] = i
     }
-    console.log(`Watch list: ${watchDb.size} aircraft`)
-  } catch (e) { console.error('Watch list database:', e.message) }
+    hexes = hexes.subarray(0, n); idxs = idxs.subarray(0, n)
+    if (!sorted) { // the file is sorted today; keep the lookup right if that ever changes
+      const order = Array.from({ length: n }, (_, k) => k).sort((p, q) => hexes[p] - hexes[q])
+      hexes = Uint32Array.from(order, k => hexes[k]); idxs = Uint16Array.from(order, k => idxs[k])
+    }
+    dbHex = hexes; dbTypeIdx = idxs; dbTypes = types
+    typeClasses.clear()
+    console.log(`Aircraft database: ${dbHex.length} aircraft, ${dbTypes.length} types${WATCH.enabled ? `, watch list ${watchDb.size}` : ''}`)
+  } catch (e) { console.error('Aircraft database:', e.message) }
 }
+function dbTypeOf(hex) { // type designator of an aircraft, '' when unknown
+  const h = parseInt(hex, 16)
+  let lo = 0, hi = dbHex.length - 1
+  while (lo <= hi) { const m = (lo + hi) >> 1, v = dbHex[m]; if (v === h) return dbTypes[dbTypeIdx[m]]; if (v < h) lo = m + 1; else hi = m - 1 }
+  return ''
+}
+const acType = a => dbTypeOf(a.hex) || getInfo(a)?.aircraft?.type || ''
 function watched(a) {
   if (!WATCH.enabled || DEMO || (WATCH.max_km && a.d > WATCH.max_km)) return null
   const db = watchDb.get(a.hex)
@@ -850,27 +886,43 @@ function pill(g, s, x, y, { px = 9, fg = UI.text, bg = '#1a242d', align = 'left'
   return w
 }
 
-// Aircraft glyphs (nose up at track 0), one silhouette per kind of aircraft. Each outline is the right half, mirrored.
+// Aircraft glyphs (nose up at track 0), one silhouette per kind of aircraft. Each outline is the right half, mirrored;
+// `pods` are engines drawn ahead of the wing.
 const SHAPES = {
   liner: { k: 0.84, pts: [[0, -8], [1.3, -5.6], [1.3, -1.6], [8, 3], [8, 4.7], [1.3, 2.4], [1.3, 5.6], [3.7, 7.6], [3.7, 8.8], [0, 7.8]] },                      // airliner: swept wings
   heavy: { k: 1.0, pts: [[0, -9.5], [1.7, -7], [1.7, -2.4], [9.8, 3.2], [9.8, 5.2], [1.7, 2.8], [1.7, 6.4], [4.6, 8.6], [4.6, 10], [0, 8.9]], pods: [[3.1, -3.3], [6.2, -1.2]] }, // wide-body: bigger, four engines
   small: { k: 0.82, pts: [[0, -7.6], [1, -5.2], [1, 0.4], [6.4, 3.8], [6.4, 5], [1, 3.4], [1, 4], [2.4, 4], [2.4, 6.6], [1, 6.6], [1, 7.2], [3.4, 8.4], [3.4, 9.4], [0, 8.8]] }, // business or regional jet: rear engines, T-tail
   light: { k: 0.86, pts: [[0, -6.2], [1, -4.8], [1, -2.6], [8.2, -2.6], [8.2, 0.2], [1, 0.2], [1, 5], [3.4, 5], [3.4, 7], [0, 7]] },                                 // light aircraft: straight wing
+  prop: { k: 0.88, pts: [[0, -7.6], [1.1, -5.6], [1.1, -1.9], [8.8, -1.1], [8.8, 0.9], [1.1, 1.5], [1.1, 5.6], [3.8, 6.4], [3.8, 7.9], [0, 7.6]], pods: [[3, -3.9]] },                         // turboprop airliner or transport: straight wing, two engines
   fast: { k: 0.84, pts: [[0, -8.4], [1, -4.4], [1.4, 0], [6.2, 6], [6.2, 7.4], [1.7, 6.4], [1.2, 8.2], [0, 7.8]] },                                               // high performance: delta
 }
-// No emitter category (Mode S only, MLAT): go by the aircraft type when it is known
+// Kind of aircraft. The type wins when it is known (database, then adsbdb): ICAO describes every type by airframe,
+// number and kind of engines (L2J = landplane, 2 jets) and wake category, which sorts out everything except
+// business jets and fast jets, recognised by name. Without a type, the ADS-B emitter category decides.
+const BIZ_NAMES = /CITATION|LEARJET|GULFSTREAM|FALCON|CHALLENGER|GLOBAL|HAWKER|PHENOM|PRAETOR|LEGACY|LINEAGE|PC-24|HONDA|BEECHJET|PREMIER|SABRELINER|JETSTAR|WESTWIND|ASTRA|ECLIPSE|GALAXY|LONGITUDE|LATITUDE|SOVEREIGN|MUSTANG|NEXTANT|SYBERJET|BAE-125|HS-125|DH-125|CORVETTE|MS-760|G-1159|BD-100|BD-700|JET COMMANDER|EMB-50[05]|EMB-545|EMB-550|SABRE [4-8]|COMMODORE|MU-300|HANSA/i
+const FAST_NAMES = /\bF-\d|\bF\/?A-\d|TYPHOON|EUROFIGHTER|RAFALE|MIRAGE|TORNADO|GRIPEN|\bHAWK\b|GOSHAWK|ALPHA ?JET|HARRIER|\bA-10\b|\bSU-\d|\bMIG[- ]\d|\bL-39\b|\bL-159\b|\bL-29\b|\bM-346\b|\bT-38\b|\bAMX\b|JAGUAR|PHANTOM|VIGGEN|DRAKEN|\bT-45\b|MB-339|MB-326|LIGHTNING|ETENDARD|KFIR|\bJ-\d|\bJF-17|\bF-CK|TEJAS|\bT-50\b|YAK-130|\bB-1\b|\bB-2\b|HUNTER|STARFIGHTER|\bA-4\b|\bA-6\b|\bA-7\b|\bAV-8|\bT-2\b|\bT-4\b|\bK-8\b|\bS-211\b|\bC-101\b|SAAB (105|29|32|35|37|39)|JET PROVOST|STRIKEMASTER|VAMPIRE|VENOM|GNAT|TALON|\bEA-18|MYSTERE|\bFC-1\b|\bJH-7\b|\bQ-5\b|\bKF-21\b|\bT-33\b|METEOR|DELTA DART/i
 const HELI_TYPES = /^(EC\d\d|H1[2-7]\d|AS[3-6]\d|A1[0-9]9|AW\d|R22|R44|R66|B06|B4[0-3]\d|B212|B412|S76|S92|NH90|TIGR|UH1|H60|H47|H53|G2CA|CABR|LAMA|ALO[23]|GAZL|PUMA|EH10|MI\d)/
 const HEAVY_TYPES = /^(A33|A34|A35|A38|B74|B76|B77|B78|MD11|DC10|IL76|IL96|A124|A225|AN22|C17|C5M|A3ST|A337|BLCF|K35|A400|E3)/
 const LIGHT_TYPES = /^(C1[2-9]\d|C2[01]\d|P28|PA\d|P32|P46|DA[24]\d|DR[2-4]\d|SR2\d|TB[12]\d|TB9|RV\d|M20|BE3[356]|BE23|AA5|TOBA|ULAC|GLID|DV20|AT3|WT9|CP30|D11|J3|PC6|PC12)/
+const typeClasses = new Map()
+function typeClass(t) {
+  if (typeClasses.has(t)) return typeClasses.get(t)
+  const [name = '', desc = '', wtc = ''] = typeInfo[t] || []
+  let c = null
+  if (desc.length >= 3) {
+    const big = wtc === 'H' || wtc === 'J'
+    if ('HGR'.includes(desc[0])) c = 'heli' // helicopters, gyrocopters, tiltrotors
+    else if (desc[2] === 'J') c = FAST_NAMES.test(name) && !/FOKKER/i.test(name) ? 'fast' : big ? 'heavy' : wtc === 'L' || BIZ_NAMES.test(name) ? 'small' : 'liner'
+    else c = big ? 'heavy' : wtc === 'M' && desc[1] !== '1' ? 'prop' : 'light'
+  } else if (t) c = HELI_TYPES.test(t) ? 'heli' : HEAVY_TYPES.test(t) ? 'heavy' : LIGHT_TYPES.test(t) ? 'light' : null // type table not loaded
+  typeClasses.set(t, c)
+  return c
+}
 function iconClass(a) {
-  const c = a.category, t = getInfo(a)?.aircraft?.type || ''
-  if (c === 'A7' || HELI_TYPES.test(t)) return 'heli'
-  if (c === 'A5') return 'heavy'
-  if (c === 'A1' || c === 'B1' || c === 'B4') return 'light'
-  if (c === 'A2') return 'small'
-  if (c === 'A6') return 'fast'
-  if (c === 'A3' || c === 'A4') return 'liner'
-  return HEAVY_TYPES.test(t) ? 'heavy' : LIGHT_TYPES.test(t) ? 'light' : 'liner'
+  const byType = typeClass(acType(a))
+  if (byType) return byType
+  const c = a.category
+  return c === 'A7' ? 'heli' : c === 'A5' ? 'heavy' : c === 'A1' || c === 'B1' || c === 'B4' ? 'light' : c === 'A2' ? 'small' : c === 'A6' ? 'fast' : 'liner'
 }
 function glyph(g, a, x, y, { color, outline = 'rgba(0,0,0,0.85)', scale = 1, alpha = 1 } = {}) {
   const cls = a.cls || iconClass(a), shape = SHAPES[cls], s = scale * (shape ? shape.k : 0.84)
@@ -1170,7 +1222,7 @@ function drawSpotlight(g, a, ov) {
   // line 2: what matters most right now
   const second = ov ? [T.overflight(ov.t < 1 ? '<1' : Math.round(ov.t)), UI.amber, T.at(ov.d.toFixed(1))]
     : app ? [`ILS ${app.end.id} ${app.ap.iata || app.ap.icao}`, UI.cyan, `${app.along.toFixed(1)} km`]
-    : [route ? `${route.from.iata} › ${route.to.iata}` : (info.aircraft?.type || `${Math.round(kmBetween(a, view))} km`), UI.sub, isMilitary(a) ? T.mil : logo ? '' : countryOf(a)]
+    : [route ? `${route.from.iata} › ${route.to.iata}` : (acType(a) || `${Math.round(kmBetween(a, view))} km`), UI.sub, isMilitary(a) ? T.mil : logo ? '' : countryOf(a)]
   const rw = txt(g, second[2], right, by + 28, { px: 9, weight: 700, color: ov || app ? second[1] : UI.mute, align: 'right' })
   txt(g, second[0], left, by + 28, { px: 10, weight: ov || app ? 700 : 600, color: second[1], max: right - left - rw - 6 })
   if (a.hex !== selectedHex) wantInfo(a, true)
@@ -1213,14 +1265,14 @@ function drawAircraftTile(g, i, a, refPoint) {
   else if (app) pill(g, `ILS ${app.end.id} ${app.ap.iata || app.ap.icao}`, b.l, b.y + 53, { fg: UI.cyan, bg: '#0a3440' })
   else if (a.watch) txt(g, a.watch, b.l, b.y + 53, { px: 11, weight: 700, color: UI.violet, max: b.r - b.l })
   else if (route) txt(g, `${route.from.iata} › ${route.to.iata}`, b.l, b.y + 53, { px: 12, weight: 600, color: '#d5e0e8', max: b.r - b.l })
-  else if (info?.aircraft?.type) txt(g, info.aircraft.type, b.l, b.y + 53, { px: 11, weight: 600, color: UI.mute })
+  else if (acType(a)) txt(g, acType(a), b.l, b.y + 53, { px: 11, weight: 600, color: UI.mute })
   // distance, country
   const ref = refPoint ? kmBetween(a, refPoint) : a.d
   txt(g, fmtKm(ref), b.l, b.y + 71, { px: 10, weight: 600, color: UI.sub })
   const mil = isMilitary(a), logo = logoOf(a)
   if (logo) return drawLogo(g, logo, b.r - 21, b.y + 57, 22) // the airline logo replaces the country code
   txt(g, mil ? T.mil : countryOf(a), b.r - 12, b.y + 71, { px: 9, weight: 700, color: mil ? '#8fe05a' : UI.mute, align: 'right' })
-  glyph(g, { track: a.track, cls: iconClass(a) }, b.r - 4, b.y + 67, { color: UI.sub, outline: null, scale: 0.6 })
+  glyph(g, { track: a.track, cls: a.cls || iconClass(a) }, b.r - 4, b.y + 67, { color: UI.sub, outline: null, scale: 0.6 })
 }
 
 // Photo across tiles i and i + 1, with the photographer credit and the name of the site it comes from
@@ -1320,7 +1372,8 @@ function drawDetail(g, sel) {
 
   drawInfoTile(g, 1, T.from, r ? r.from.iata : '–', { color: r ? UI.text : UI.mute, sub: r ? r.from.city : T.unknown, sub2: r?.from.obs ? (r.from.iata === '?' ? '' : T.seen) : r?.from.iso })
   drawInfoTile(g, 2, T.to, r ? r.to.iata : '–', { color: r ? UI.text : UI.mute, sub: r ? r.to.city : T.unknown, sub2: r?.to.obs ? (r.to.iata === '?' ? '' : T.seen) : r?.to.iso })
-  drawInfoTile(g, 3, T.type, ac?.type || '–', { color: ac?.type ? UI.text : UI.mute, sub: ac?.reg, sub2: ac?.model && ac.model !== ac.type ? ac.model : '' })
+  const type = acType(sel), model = ac?.model && ac.model !== type ? ac.model : (typeInfo[type]?.[0] || '')
+  drawInfoTile(g, 3, T.type, type || '–', { color: type ? UI.text : UI.mute, sub: ac?.reg, sub2: model })
   drawInfoTile(g, 4, T.alt, sel.ground ? T.ground : sel.alt != null ? sel.alt.toLocaleString(T.locale) : '–', { color: col, sub: 'ft', sub2: sel.alt != null ? `${Math.round(sel.alt * 0.3048).toLocaleString(T.locale)} m` : '' })
   drawInfoTile(g, 5, T.spd, sel.speed != null ? String(Math.round(sel.speed * 1.852)) : '–', { sub: 'km/h', sub2: sel.speed != null ? `${Math.round(sel.speed)} kt` : '' })
   const vr = sel.vrate
@@ -1770,7 +1823,7 @@ async function main() {
 
   buildAllMaps()
   await loadAirports().catch(e => console.error('Airports:', e.message))
-  loadWatchDb()
+  loadAircraftDb()
   await poll()
   setInterval(poll, cfg.poll_ms)
   setInterval(() => render({ wheel: Date.now() - lastWheelAt >= INPUT_MS * 0.8 }), 1000 / (cfg.fps ?? 1))

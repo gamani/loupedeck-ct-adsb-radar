@@ -12,7 +12,7 @@ The round wheel screen becomes a radar scope over a satellite map, the touch pan
 
 **Wheel screen (radar scope)**
 - Satellite map with borders and place names under a compass rose, range rings and a radar sweep. The view can **follow** an aircraft.
-- Aircraft silhouettes coloured by altitude (tar1090-style scale), fading **trails**, callsign labels that avoid each other. The silhouette tells the kind of aircraft: light aircraft, business or regional jet, airliner, wide-body, fast jet, helicopter (from the ADS-B emitter category, or from the aircraft type when the category is not sent).
+- Aircraft silhouettes coloured by altitude (tar1090-style scale), fading **trails**, callsign labels that avoid each other. The silhouette tells the kind of aircraft: light aircraft, turboprop, business jet, airliner, wide-body, fast jet, helicopter. It comes from the aircraft type, looked up in the tar1090 aircraft database, or from the ADS-B emitter category when the type is unknown.
 - **Spotlight banner**: one aircraft at a time with airline logo, callsign, flight level and route, cycling through the nearest ones.
 - **Overflight prediction**: aircraft about to pass close to your home get a dashed projected path and a countdown ("Overhead 3 min").
 - **Distress ring**: aircraft squawking 7500 / 7600 / 7700 get a pulsing red ring and take over the banner.
@@ -124,6 +124,7 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 | `photos` | | `enabled` (default `true`): aircraft photo in the detail card |
 | `weather` | | `enabled` (default `true`), `refresh_min` (default `10`): METAR of the selected airport |
 | `watch` | | Watch list: `enabled`, `types` (ICAO type codes such as `A124`, `A388`), `registrations`, `hex`, `callsigns` (prefixes), `max_km` (0 = any distance) |
+| `aircraft_db` | `true` | Download and use the tar1090 aircraft database (types for the silhouettes, the tiles and the watch list) |
 | `logos` | | `enabled` (default `true`), `urls` (list of URL templates with `{icao}`, tried in order) for the airline logos |
 | `font` | `segoe` | `segoe`, `bahnschrift` (condensed, DIN-like) or `arial` |
 | `ranges_km`, `default_range_km` | 10 to 300, 100 | Radar ranges |
@@ -151,7 +152,7 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 - Airline logos: the airline is read from the callsign (its first three letters are the ICAO airline code). Each logo is shown as a round badge, downloaded once from [Jxck-S/airline-logos](https://github.com/Jxck-S/airline-logos) and cached in `logos/`. No logo is shipped with this project, and the demo screenshots are rendered without them. Set `logos.enabled` to `false` to turn them off.
 - Aircraft photos come from the [Planespotters.net photo API](https://www.planespotters.net/photo/api), with the [Airport-Data.com thumbnail API](https://airport-data.com/api/doc) as a fallback, and follow the Planespotters terms for both: the photographer is credited on the photo, a tap opens the photo's page, and the image is only kept in memory while it is on screen (nothing is stored, and the demo screenshots contain no photo).
 - Airport weather is the latest METAR from the [Aviation Weather Center API](https://aviationweather.gov/data/api/), requested for the selected airport only, every 10 minutes at most.
-- The watch list resolves types and registrations with the [tar1090 aircraft database](https://github.com/wiedehopf/tar1090-db), downloaded once a month into `aircraft-db.csv.gz`, so it also works with receivers that do not send aircraft types.
+- The [tar1090 aircraft database](https://github.com/wiedehopf/tar1090-db) is downloaded once a month (`aircraft-db.csv.gz`, `aircraft-types.json.gz`). It gives the type of about half a million aircraft, kept in memory as two compact arrays, so silhouettes, the type shown on the tiles and the watch list also work with receivers that do not send aircraft types. Set `aircraft_db` to `false` to do without it.
 - Reception statistics are kept in `stats.json` (today's figures and your all-time range record). A position only counts for the range once the aircraft has been tracked for a few seconds, to ignore decoding errors.
 - Map tiles are cached in `tiles/`.
 
@@ -168,7 +169,7 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 - [adsbdb.com](https://www.adsbdb.com): aircraft, airline and fallback route data
 - [Planespotters.net](https://www.planespotters.net) and [Airport-Data.com](https://airport-data.com): aircraft photos (credited to their photographers)
 - [Aviation Weather Center](https://aviationweather.gov): METAR data
-- [wiedehopf/tar1090-db](https://github.com/wiedehopf/tar1090-db): aircraft database used by the watch list
+- [wiedehopf/tar1090-db](https://github.com/wiedehopf/tar1090-db): aircraft and type database (silhouettes, types, watch list)
 - [Jxck-S/airline-logos](https://github.com/Jxck-S/airline-logos): airline logos, downloaded on demand. Logos are trademarks of their respective airlines and are used for identification only.
 - Map imagery: Esri World Imagery and World Boundaries and Places (Esri, Maxar, Earthstar Geographics and the GIS User Community). Check Esri's terms of use for your use case.
 

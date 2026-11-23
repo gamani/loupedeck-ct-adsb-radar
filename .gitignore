@@ -9,3 +9,4 @@ setup-log.txt
 airports-cache*.json
 stats.json
 aircraft-db.csv.gz
+aircraft-types.json.gz
