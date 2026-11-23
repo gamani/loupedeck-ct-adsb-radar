@@ -27,7 +27,7 @@ const STRINGS = {
     back: 'Back', close: 'Close', next: 'Next', unknown: 'unknown', seen: 'observed', noAircraft: r => `No aircraft within ${r} km`, noTraffic: 'No traffic for this airport yet',
     brgAt: b => `bearing ${b}°`, altMin: 'MIN ALT', none: 'none', filter: 'FILTER', bright: 'SCREEN', labels: 'LABELS', trails: 'TRAILS', map: 'MAP',
     overflight: t => `Overhead ${t} min`, at: d => `${d} km`, locale: 'en-GB', eta: 'TOUCHDOWN', slope: 'glide', rwy: 'RWY',
-    traffic: n => `${n} aircraft`, airports: 'Airports', wind: 'WIND', calm: 'CALM', byWind: '(wind)', watch: 'WATCH',
+    traffic: n => `${n} aircraft`, airports: 'Airports', wind: 'WIND', calm: 'CALM', byWind: '(wind)', watch: 'WATCH', est: 'EST.', estimated: 'ESTIMATED', landed: 'LANDED',
     stTitle: 'RECEPTION', today: 'today', stSeen: 'AIRCRAFT', stNow: 'IN VIEW', stPeak: n => `peak ${n}`, stMil: n => `${n} military`, stRange: 'MAX RANGE',
     stRecord: 'RECORD', stHigh: 'HIGHEST', stFast: 'FASTEST', stCover: 'COVERAGE', stats: 'Stats' },
   fr: { filters: ['TOUS', 'MILITAIRES', 'HELICOS', 'BASSE ALT.', 'AEROPORT', 'GROS PORTEURS', 'AU-DESSUS'], follow: 'SUIVI', ground: 'SOL', mil: 'MIL',
@@ -35,7 +35,7 @@ const STRINGS = {
     back: 'Retour', close: 'Fermer', next: 'Suite', unknown: 'inconnu', seen: 'observé', noAircraft: r => `Aucun avion dans ${r} km`, noTraffic: 'Aucun trafic pour cet aéroport',
     brgAt: b => `au ${b}°`, altMin: 'ALT MIN', none: 'aucun', filter: 'FILTRE', bright: 'ECRAN', labels: 'ETIQUETTES', trails: 'TRAINEES', map: 'CARTE',
     overflight: t => `Survol ${t} min`, at: d => `à ${d} km`, locale: 'fr-FR', eta: 'TOUCHER', slope: 'pente', rwy: 'PISTE',
-    traffic: n => `${n} avion${n > 1 ? 's' : ''}`, airports: 'Aéroports', wind: 'VENT', calm: 'CALME', byWind: '(vent)', watch: 'SURVEILLE',
+    traffic: n => `${n} avion${n > 1 ? 's' : ''}`, airports: 'Aéroports', wind: 'VENT', calm: 'CALME', byWind: '(vent)', watch: 'SURVEILLE', est: 'EST.', estimated: 'ESTIME', landed: 'POSE',
     stTitle: 'RECEPTION', today: "aujourd'hui", stSeen: 'AVIONS', stNow: 'EN VUE', stPeak: n => `pic ${n}`, stMil: n => `${n} militaires`, stRange: 'PORTEE MAX',
     stRecord: 'RECORD', stHigh: 'PLUS HAUT', stFast: 'PLUS RAPIDE', stCover: 'COUVERTURE', stats: 'Stats' },
 }
@@ -138,9 +138,10 @@ async function poll() {
       })
       .sort((a, b) => a.d - b.d)
     const now = Date.now()
+    applyLandingEstimates(now)
     for (const a of aircraft) { a.watch = watched(a); a.cls = iconClass(a) }
     for (const a of aircraft) {
-      if (a.seenPos > 15) continue
+      if (a.seenPos > 15 || a.est) continue
       const tr = trails.get(a.hex) || []
       const last = tr[tr.length - 1]
       if (!last || last.lat !== a.lat || last.lon !== a.lon) tr.push({ lat: a.lat, lon: a.lon, t: now })
@@ -289,9 +290,46 @@ async function loadAirports() {
 }
 const airportByIcao = icao => airports.find(a => a.icao === icao)
 
+// ---------- Estimated landings ----------
+// The receiver usually loses a landing aircraft a few kilometres before the runway, below its radio horizon.
+// An aircraft lost while established on final and low keeps flying on the scope as an estimate: along the runway
+// axis, at its last ground speed, down to the threshold, then shown as landed for a moment. Estimates are drawn
+// dashed, labelled as such, and never feed the trails, the alerts or the reception statistics. Real data wins
+// as soon as the aircraft is received again.
+const EST = Object.assign({ enabled: true, after_s: 8, max_km: 15, max_agl_ft: 3000, landed_s: 25 }, cfg.landing_estimate === false ? { enabled: false } : cfg.landing_estimate || {})
+const finals = new Map() // hex -> last real fix on final: { t, snap, ap, end, along, agl, glide }
+function applyLandingEstimates(now) {
+  if (!EST.enabled) return
+  for (const a of aircraft) { // remember the last real fix of every aircraft established on final
+    if (a.seenPos > EST.after_s) continue
+    const app = a.ground || a.alt == null ? null : approachOf(a)
+    if (app) finals.set(a.hex, { t: now - a.seenPos * 1000, snap: { ...a }, ap: app.ap, end: app.end, along: app.along, agl: a.alt - app.end.elev, glide: app.glide })
+    else finals.delete(a.hex)
+  }
+  const present = new Map(aircraft.map(a => [a.hex, a]))
+  for (const [hex, f] of finals) {
+    const real = present.get(hex)
+    if (real && real.seenPos <= EST.after_s) continue // still received
+    const dt = (now - f.t) / 1000
+    if (f.along > EST.max_km || f.agl > EST.max_agl_ft) { if (dt > 120) finals.delete(hex); continue } // lost too far out or too high to call it a landing
+    const v = Math.max(70, f.snap.speed || 130) * 1.852 / 3600 // km per second
+    const along = f.along - v * dt, landed = along <= 0
+    if (dt > 600 || (landed && -along / v > EST.landed_s)) { finals.delete(hex); continue }
+    const pos = landed ? offsetPt(f.end, f.end.course, Math.min(0.8, -along)) : offsetPt(f.end, f.end.course + 180, along)
+    const a = real || { ...f.snap }
+    if (!real) aircraft.push(a)
+    const { d, brg } = distBearing(pos.lat, pos.lon)
+    Object.assign(a, { lat: pos.lat, lon: pos.lon, d, brg, track: f.end.course, ground: landed, alt: landed ? 0 : Math.round(f.end.elev + f.agl * along / f.along), vrate: landed ? 0 : f.snap.vrate, speed: landed ? null : f.snap.speed, seenPos: dt,
+      est: { landed, app: { ap: f.ap, end: f.end, along: Math.max(0, along), locDev: 0, glide: f.glide, gsDev: f.glide - 3, eta: Math.max(0, along) / (v * 60) } } })
+  }
+  aircraft.sort((p, q) => p.d - q.d)
+}
+const etaText = min => min < 1 ? `${Math.max(0, Math.round(min * 60 / 5) * 5)} s` : `${Math.round(min)} min`
+
 // Is the aircraft flying an ILS-like final approach? (geometry from ADS-B position, not the real ILS signal)
 const ilsCache = new Map()
 function approachOf(a) {
+  if (a.est) return a.est.app // estimated landing: on the axis by construction
   const k = `${a.hex}|${a.lat}|${a.lon}|${a.alt}|${a.track}|${a.vrate}` // everything the result depends on
   if (ilsCache.has(k)) return ilsCache.get(k)
   let best = null
@@ -728,7 +766,7 @@ function updateStats(j) {
   const hhmm = new Date().toTimeString().slice(0, 5)
   let n = 0
   for (const a of aircraft) {
-    if (a.seenPos > 15 || !/^[0-9a-f]{6}$/.test(a.hex)) continue
+    if (a.est || a.seenPos > 15 || !/^[0-9a-f]{6}$/.test(a.hex)) continue // estimated positions are not receptions
     n++
     const name = a.flight || a.hex.toUpperCase(), code = airlineCode(a), known = stats.seen.get(a.hex)
     if (known === undefined) { stats.seen.set(a.hex, ''); if (isMilitary(a)) stats.mil++ }
@@ -926,7 +964,7 @@ function iconClass(a) {
   const c = a.category
   return c === 'A7' ? 'heli' : c === 'A5' ? 'heavy' : c === 'A1' || c === 'B1' || c === 'B4' ? 'light' : c === 'A2' ? 'small' : c === 'A6' ? 'fast' : 'liner'
 }
-function glyph(g, a, x, y, { color, outline = 'rgba(0,0,0,0.85)', scale = 1, alpha = 1 } = {}) {
+function glyph(g, a, x, y, { color, outline = 'rgba(0,0,0,0.85)', scale = 1, alpha = 1, ghost = false } = {}) {
   const cls = a.cls || iconClass(a), shape = SHAPES[cls], s = scale * (shape ? shape.k : 0.84)
   g.save(); g.translate(x, y); g.globalAlpha = alpha; g.lineJoin = 'round'
   g.beginPath()
@@ -943,8 +981,14 @@ function glyph(g, a, x, y, { color, outline = 'rgba(0,0,0,0.85)', scale = 1, alp
     g.closePath()
     for (const [px, py] of shape.pods || []) { g.rect(px * s, py * s, 1.5 * s, 3 * s); g.rect((-px - 1.5) * s, py * s, 1.5 * s, 3 * s) } // engines ahead of the wing
   }
-  if (outline) { g.lineWidth = 2.2; g.strokeStyle = outline; g.stroke() }
-  g.fillStyle = color; g.fill()
+  if (ghost) { // estimated position: faint body, dashed outline
+    g.lineWidth = 3; g.strokeStyle = 'rgba(0,0,0,0.6)'; g.stroke()
+    g.globalAlpha = alpha * 0.28; g.fillStyle = color; g.fill(); g.globalAlpha = alpha
+    g.setLineDash([2, 1.6]); g.lineWidth = 1.2; g.strokeStyle = color; g.stroke(); g.setLineDash([])
+  } else {
+    if (outline) { g.lineWidth = 2.2; g.strokeStyle = outline; g.stroke() }
+    g.fillStyle = color; g.fill()
+  }
   if (cls === 'heli' && a.track != null) { g.strokeStyle = color; g.lineWidth = 1; g.beginPath(); g.arc(0, -0.5 * s, 6 * s, 0, Math.PI * 2); g.stroke() }
   g.restore()
 }
@@ -1072,7 +1116,7 @@ function drawRadar() {
     } else if (a === spot) {
       g.strokeStyle = col; g.lineWidth = 1.3; g.setLineDash([3, 3]); g.beginPath(); g.arc(x, y, 12, 0, Math.PI * 2); g.stroke(); g.setLineDash([])
     }
-    glyph(g, a, x, y, { color: col, outline: emerg ? UI.red : 'rgba(0,0,0,0.85)', alpha: a.seenPos > 20 ? 0.45 : 1 })
+    glyph(g, a, x, y, { color: col, outline: emerg ? UI.red : 'rgba(0,0,0,0.85)', alpha: !a.est && a.seenPos > 20 ? 0.45 : 1, ghost: !!a.est })
   }
 
   // Predicted overflight path of the spotlight aircraft
@@ -1224,6 +1268,7 @@ function drawSpotlight(g, a, ov) {
   txt(g, a.flight || a.hex.toUpperCase(), left, by + 15, { px: 12, weight: 700, max: right - left - flw - 6 })
   // line 2: what matters most right now
   const second = ov ? [T.overflight(ov.t < 1 ? '<1' : Math.round(ov.t)), UI.amber, T.at(ov.d.toFixed(1))]
+    : a.est ? [`${a.est.landed ? T.landed : T.est} ${app.end.id} ${app.ap.iata || app.ap.icao}`, a.est.landed ? UI.green : UI.amber, a.est.landed ? '' : `~ ${etaText(app.eta)}`]
     : app ? [`ILS ${app.end.id} ${app.ap.iata || app.ap.icao}`, UI.cyan, `${app.along.toFixed(1)} km`]
     : [route ? `${route.from.iata} › ${route.to.iata}` : (acType(a) || `${Math.round(kmBetween(a, view))} km`), UI.sub, isMilitary(a) ? T.mil : logo ? '' : countryOf(a)]
   const rw = txt(g, second[2], right, by + 28, { px: 9, weight: 700, color: ov || app ? second[1] : UI.mute, align: 'right' })
@@ -1250,7 +1295,7 @@ const flText = a => a.ground ? T.ground : a.alt != null ? String(Math.round(a.al
 const fmtKm = d => `${d < 10 ? d.toFixed(1) : Math.round(d)} km`
 
 function drawAircraftTile(g, i, a, refPoint) {
-  const emerg = isEmergency(a.squawk), col = altColor(a.alt), app = approachOf(a), info = getInfo(a), route = routeOf(a)
+  const emerg = isEmergency(a.squawk), col = a.est ? UI.mute : altColor(a.alt), app = approachOf(a), info = getInfo(a), route = routeOf(a)
   const b = panel(g, i, { accent: emerg ? UI.red : col, fill: emerg ? UI.panelWarn : UI.panel, border: emerg ? UI.red : a.watch ? UI.violet : UI.line, bw: emerg || a.watch ? 2 : 1 })
   txt(g, a.flight || a.hex.toUpperCase(), b.l, b.y + 18, { px: 14, weight: 700, max: b.r - b.l })
   // flight level, vertical trend, heading
@@ -1265,13 +1310,14 @@ function drawAircraftTile(g, i, a, refPoint) {
   }
   // what it is doing: distress, approach, route or type
   if (emerg) pill(g, `SQK ${a.squawk}`, b.l, b.y + 53, { fg: '#fff', bg: UI.red })
+  else if (a.est) pill(g, a.est.landed ? `${T.landed} ${app.end.id}` : `${T.est} ${app.end.id} ${app.ap.iata || app.ap.icao}`, b.l, b.y + 53, a.est.landed ? { fg: UI.green, bg: '#0f3320' } : { fg: UI.amber, bg: '#3a2c08' })
   else if (app) pill(g, `ILS ${app.end.id} ${app.ap.iata || app.ap.icao}`, b.l, b.y + 53, { fg: UI.cyan, bg: '#0a3440' })
   else if (a.watch) txt(g, a.watch, b.l, b.y + 53, { px: 11, weight: 700, color: UI.violet, max: b.r - b.l })
   else if (route) txt(g, `${route.from.iata} › ${route.to.iata}`, b.l, b.y + 53, { px: 12, weight: 600, color: '#d5e0e8', max: b.r - b.l })
   else if (acType(a)) txt(g, acType(a), b.l, b.y + 53, { px: 11, weight: 600, color: UI.mute })
   // distance, country
   const ref = refPoint ? kmBetween(a, refPoint) : a.d
-  txt(g, fmtKm(ref), b.l, b.y + 71, { px: 10, weight: 600, color: UI.sub })
+  txt(g, a.est ? (a.est.landed ? '' : `~ ${etaText(app.eta)}`) : fmtKm(ref), b.l, b.y + 71, { px: 10, weight: 600, color: a.est ? UI.amber : UI.sub })
   const mil = isMilitary(a), logo = logoOf(a)
   if (logo) return drawLogo(g, logo, b.r - 21, b.y + 57, 22) // the airline logo replaces the country code
   txt(g, mil ? T.mil : countryOf(a), b.r - 12, b.y + 71, { px: 9, weight: 700, color: mil ? '#8fe05a' : UI.mute, align: 'right' })
@@ -1359,7 +1405,7 @@ function drawIlsTile(g, i, app) {
 let photoLink = null // page of the photo currently on tiles 9 and 10 (opened by a tap)
 function drawDetail(g, sel) {
   const info = getInfo(sel) || {}, emerg = isEmergency(sel.squawk)
-  const col = altColor(sel.alt), r = routeOf(sel), al = info.airline, ac = info.aircraft
+  const col = sel.est ? UI.mute : altColor(sel.alt), r = routeOf(sel), al = info.airline, ac = info.aircraft
   // identity
   const b = panel(g, 0, { accent: emerg ? UI.red : col, fill: emerg ? UI.panelWarn : UI.panel, border: emerg ? UI.red : sel.watch ? UI.violet : UI.line, bw: emerg || sel.watch ? 2 : 1 })
   txt(g, sel.flight || sel.hex.toUpperCase(), b.l, b.y + 23, { px: 16, weight: 700, max: b.r - b.l })
@@ -1369,6 +1415,7 @@ function drawDetail(g, sel) {
   if (iso) cx += pill(g, iso, cx, b.y + 57, { fg: UI.sub }) + 3
   if (isMilitary(sel)) cx += pill(g, T.mil, cx, b.y + 57, { fg: '#b8f58a', bg: '#1f3a12' }) + 3
   if (emerg) pill(g, sel.squawk, cx, b.y + 57, { fg: '#fff', bg: UI.red })
+  else if (sel.est) pill(g, sel.est.landed ? T.landed : T.est, cx, b.y + 57, sel.est.landed ? { fg: UI.green, bg: '#0f3320' } : { fg: UI.amber, bg: '#3a2c08' })
   txt(g, sel.hex.toUpperCase(), b.l, b.y + 74, { px: 9, weight: 600, color: UI.mute })
   const logo = logoOf(sel)
   if (logo) drawLogo(g, logo, b.r - 24, b.y + 53, 26)
@@ -1386,8 +1433,9 @@ function drawDetail(g, sel) {
   photoLink = null
   if (app) { // ILS-like approach: deviation indicator, runway, time to touchdown
     drawIlsTile(g, 8, app)
-    drawInfoTile(g, 9, `ILS ${app.ap.iata || app.ap.icao}`, app.end.id, { color: UI.cyan, sub: `${app.along.toFixed(1)} km`, border: withAlpha(UI.cyan, 0.5) })
-    drawInfoTile(g, 10, T.eta, app.eta < 1 ? '<1 min' : `${Math.round(app.eta)} min`, { sub: `${T.slope} ${app.glide.toFixed(1)}°`, px: 19, border: withAlpha(UI.cyan, 0.5) })
+    const e = sel.est, ec = e ? UI.amber : UI.cyan // amber = estimated, not received
+    drawInfoTile(g, 9, `${e ? T.est : 'ILS'} ${app.ap.iata || app.ap.icao}`, app.end.id, { color: ec, sub: e?.landed ? T.landed : `${e ? '~ ' : ''}${app.along.toFixed(1)} km`, border: withAlpha(ec, 0.5) })
+    drawInfoTile(g, 10, T.eta, e?.landed ? T.landed : e ? `~${etaText(app.eta)}` : app.eta < 1 ? '<1 min' : `${Math.round(app.eta)} min`, { color: e?.landed ? UI.green : UI.text, sub: e ? T.estimated : `${T.slope} ${app.glide.toFixed(1)}°`, px: e?.landed ? 15 : 19, border: withAlpha(ec, 0.5) })
   } else if (photo) { // photo on two tiles: distance and squawk share one tile, the airline is already on the identity tile
     drawInfoTile(g, 8, T.dist, sel.d.toFixed(1), { sub: `km ${T.brgAt(Math.round(sel.brg))}`, sub2: sel.squawk ? `SQK ${sel.squawk}` : '' })
     drawPhotoTiles(g, 9, photo)
@@ -1593,6 +1641,7 @@ function rightCells() {
 // Emergency (red), low military nearby (orange), low aircraft overhead / imminent overflight (yellow)
 const A = Object.assign({ radius_km: 10, below_ft: 5000, military_radius_km: 30, military_below_ft: 10000, emergency: true, ha_notify: '' }, cfg.alert || {})
 function classify(a) {
+  if (a.est) return null // an estimate is not a reception
   if (A.emergency && isEmergency(a.squawk)) return ['emerg', `EMERGENCY squawk ${a.squawk}`]
   if (isMilitary(a) && a.d < A.military_radius_km && a.alt != null && a.alt < A.military_below_ft) return ['warn', 'low military']
   if (a.d < A.radius_km && a.alt != null && !a.ground && a.alt < A.below_ft) return ['info', 'low aircraft']

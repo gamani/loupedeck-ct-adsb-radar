@@ -33,6 +33,7 @@ The round wheel screen becomes a radar scope over a satellite map, the touch pan
 - In the detail card, an approach adds a cockpit-style **deviation indicator** (localizer and glide slope needles), the runway, the distance to the threshold, the time to touchdown and the actual glide angle.
 - **Airport mode** centres the scope on the selected airport and lists only its traffic (on approach, inbound or outbound).
 - **Airport weather**: in airport mode, a tile shows the latest METAR of the selected airport: wind (with a dial showing it against the runways), gusts, flight category, QNH and visibility. When nobody is on final, the header shows the runway the wind favours.
+- **Estimated landings**: a receiver usually loses a landing aircraft a few kilometres before the runway, below its radio horizon. An aircraft lost while established on final and low keeps flying as an estimate, along the runway axis at its last ground speed, down to the threshold, then shows as landed for a moment. Estimates are drawn dashed and labelled `EST.` in amber, with a countdown to touchdown; they never feed the trails, the alerts or the reception statistics, and real data takes over as soon as the aircraft is received again.
 - Arrivals and departures come from the route when it is known; otherwise an aircraft climbing or descending below FL200 within 60 km is attached to the nearest airport with scheduled flights. Traffic is limited to what your receiver hears: finals at distant airports are usually below its horizon.
 
 ![Approach](docs/screenshots/approach.png)
@@ -124,6 +125,7 @@ The script closes the official Loupedeck / Logi Plugin Service software, because
 | `photos` | | `enabled` (default `true`): aircraft photo in the detail card |
 | `weather` | | `enabled` (default `true`), `refresh_min` (default `10`): METAR of the selected airport |
 | `watch` | | Watch list: `enabled`, `types` (ICAO type codes such as `A124`, `A388`), `registrations`, `hex`, `callsigns` (prefixes), `max_km` (0 = any distance) |
+| `landing_estimate` | | `enabled` (default `true`), `after_s` (seconds without a position before estimating, 8), `max_km` and `max_agl_ft` (how far and how high the last real fix may be, 15 and 3000), `landed_s` (how long a landed aircraft stays, 25). `false` turns it off |
 | `aircraft_db` | `true` | Download and use the tar1090 aircraft database (types for the silhouettes, the tiles and the watch list) |
 | `logos` | | `enabled` (default `true`), `urls` (list of URL templates with `{icao}`, tried in order) for the airline logos |
 | `font` | `segoe` | `segoe`, `bahnschrift` (condensed, DIN-like) or `arial` |
