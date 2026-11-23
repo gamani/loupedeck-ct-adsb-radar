@@ -650,7 +650,7 @@ const TDB = 'https://raw.githubusercontent.com/wiedehopf/tar1090-db/'
 let dbHex = new Uint32Array(0), dbTypeIdx = new Uint16Array(0), dbTypes = []
 let typeInfo = {} // type designator -> [name, ICAO description such as L2J, wake category]
 async function loadAircraftDb() {
-  if (DEMO || cfg.aircraft_db === false) return
+  if (cfg.aircraft_db === false) return
   try {
     const stale = f => !existsSync(f) || Date.now() - statSync(f).mtimeMs > 30 * 86400000
     const get = async (url, file) => {
@@ -658,13 +658,15 @@ async function loadAircraftDb() {
       if (r.ok) writeFileSync(file, Buffer.from(await r.arrayBuffer()))
       else if (!existsSync(file)) throw new Error(`HTTP ${r.status}`)
     }
-    if (stale(DB_FILE) || stale(TYPES_FILE)) {
+    if (stale(TYPES_FILE) || (!DEMO && stale(DB_FILE))) {
       console.log('Downloading the aircraft database (tar1090-db, once a month)...')
-      await get(TDB + 'csv/aircraft.csv.gz', DB_FILE)
+      if (!DEMO) await get(TDB + 'csv/aircraft.csv.gz', DB_FILE)
       await get(TDB + 'master/db/icao_aircraft_types2.js', TYPES_FILE)
     }
     const raw = readFileSync(TYPES_FILE)
     typeInfo = JSON.parse(raw[0] === 0x1f ? gunzipSync(raw) : raw)
+    typeClasses.clear()
+    if (DEMO) return // the demo traffic is fictitious: only the type table is needed
     const seen = new Map(), types = []
     let hexes = new Uint32Array(600000), idxs = new Uint16Array(600000), n = 0, sorted = true, prev = -1
     for await (const line of createInterface({ input: createReadStream(DB_FILE).pipe(createGunzip()) })) { // hex;registration;type;flags;description
@@ -1842,6 +1844,7 @@ async function main() {
 process.on('SIGINT', async () => { saveStats(); try { await device?.close() } catch {} process.exit(0) })
 if (DEMO) import('./tools/render-screenshots.js').then(async m => {
   await loadAirports().catch(e => console.error('Airports:', e.message))
+  await loadAircraftDb()
   return m.render({ setAircraft: list => { aircraft = list }, setState, drawRadar, drawCenter, drawSide, leftCells, rightCells, knobCanvas, centerCanvas, sideCanvas, drawMap, infoCache, trails, cfg, toRad, offsetPt, getAirports: () => airports })
 })
 else main().catch(e => { console.error('Error:', e.message); process.exit(1) })

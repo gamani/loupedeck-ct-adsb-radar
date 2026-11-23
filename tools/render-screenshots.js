@@ -9,14 +9,14 @@ import { writeFileSync, mkdirSync } from 'node:fs'
 const DEMO = [
   { hex: '3c6586', flight: 'DLH4AB', x: 6, y: 14, alt: 6200, track: 250, speed: 230, vrate: -1100, cat: 'A3', type: 'A321', reg: 'D-AISA', al: ['LH', 'Lufthansa', 'DE'], from: ['MUC', 'Munich', 'DE'], to: ['FRA', 'Frankfurt', 'DE'] },
   { hex: '4ca7b1', flight: 'RYR82KD', x: -21, y: 9, alt: 31000, track: 115, speed: 440, vrate: 0, cat: 'A3', type: 'B38M', reg: 'EI-HEN', al: ['FR', 'Ryanair', 'IE'], from: ['DUB', 'Dublin', 'IE'], to: ['BUD', 'Budapest', 'HU'] },
-  { hex: '4b1814', flight: 'SWR17V', x: 30, y: -24, alt: 18500, track: 25, speed: 380, vrate: 1900, cat: 'A3', type: 'BCS3', reg: 'HB-JCA', al: ['LX', 'Swiss', 'CH'], from: ['ZRH', 'Zurich', 'CH'], to: ['HAM', 'Hamburg', 'DE'] },
+  { hex: '4d0113', flight: 'LGL8012', x: 30, y: -24, alt: 18500, track: 25, speed: 330, vrate: 1500, cat: 'A2', type: 'DH8D', reg: 'LX-LQA', al: ['LG', 'Luxair', 'LU'], from: ['LUX', 'Luxembourg', 'LU'], to: ['MUC', 'Munich', 'DE'] },
   { hex: '39bdb7', flight: 'AFR1418', x: -38, y: -12, alt: 36000, track: 70, speed: 470, vrate: 0, cat: 'A3', type: 'A20N', reg: 'F-HPNB', al: ['AF', 'Air France', 'FR'], from: ['CDG', 'Paris', 'FR'], to: ['WAW', 'Warsaw', 'PL'] },
   { hex: '896439', flight: 'UAE45', x: 44, y: 31, alt: 38000, track: 290, speed: 500, vrate: 0, cat: 'A5', type: 'A388', reg: 'A6-EUD', al: ['EK', 'Emirates', 'AE'], from: ['DXB', 'Dubai', 'AE'], to: ['LHR', 'London', 'GB'] },
   { hex: '3e8f21', flight: 'CHX12', x: -7, y: -5, alt: 1800, track: 330, speed: 110, vrate: 400, cat: 'A7', type: 'EC35', reg: 'D-HDSB', al: null, from: null, to: null },
   { hex: '3f4a12', flight: 'GAF618', x: -15, y: 26, alt: 7500, track: 160, speed: 300, vrate: -800, cat: 'A3', type: 'A400', reg: '54+12', al: null, from: null, to: null },
   { hex: '4bab23', flight: 'THY1594', x: 28, y: -38, alt: 35000, track: 305, speed: 460, vrate: 0, cat: 'A3', type: 'A21N', reg: 'TC-LSA', al: ['TK', 'Turkish Airlines', 'TR'], from: ['IST', 'Istanbul', 'TR'], to: ['AMS', 'Amsterdam', 'NL'] },
   { hex: '406d7b', flight: 'BAW904', x: -42, y: 30, alt: 22000, track: 105, speed: 410, vrate: -1500, cat: 'A3', type: 'A320', reg: 'G-EUUA', al: ['BA', 'British Airways', 'GB'], from: ['LHR', 'London', 'GB'], to: ['FRA', 'Frankfurt', 'DE'] },
-  { hex: '461f9c', flight: 'FIN1AB', x: 36, y: 42, alt: 37000, track: 220, speed: 480, vrate: 0, cat: 'A3', type: 'A321', reg: 'OH-LZC', al: ['AY', 'Finnair', 'FI'], from: ['HEL', 'Helsinki', 'FI'], to: ['BCN', 'Barcelona', 'ES'] },
+  { hex: '49d2c4', flight: 'NJE7FA', x: 22, y: 30, alt: 37000, track: 220, speed: 440, vrate: 0, cat: 'A1', type: 'C68A', reg: 'CS-LTA', al: ['1I', 'NetJets Europe', 'PT'], from: ['HAM', 'Hamburg', 'DE'], to: ['NCE', 'Nice', 'FR'] },
   { hex: '4d2403', flight: 'WZZ3TK', x: -34, y: -41, alt: 33000, track: 40, speed: 450, vrate: 500, cat: 'A3', type: 'A21N', reg: 'HA-LVA', al: ['W6', 'Wizz Air', 'HU'], from: ['LIS', 'Lisbon', 'PT'], to: ['GDN', 'Gdansk', 'PL'] },
 ]
 // Two aircraft established on final for the demo airport: [callsign, hex, km from the threshold, km/h-ish speed in kt, glide angle]
