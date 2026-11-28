@@ -27,7 +27,7 @@ const STRINGS = {
     back: 'Back', close: 'Close', next: 'Next', unknown: 'unknown', seen: 'observed', noAircraft: r => `No aircraft within ${r} km`, noTraffic: 'No traffic for this airport yet',
     brgAt: b => `bearing ${b}°`, altMin: 'MIN ALT', none: 'none', filter: 'FILTER', bright: 'SCREEN', labels: 'LABELS', trails: 'TRAILS', map: 'MAP',
     overflight: t => `Overhead ${t} min`, at: d => `${d} km`, locale: 'en-GB', eta: 'TOUCHDOWN', slope: 'glide', rwy: 'RWY',
-    traffic: n => `${n} aircraft`, airports: 'Airports', wind: 'WIND', calm: 'CALM', byWind: '(wind)', watch: 'WATCH', est: 'EST.', estimated: 'ESTIMATED', landed: 'LANDED',
+    traffic: n => `${n} aircraft`, airports: 'Airports', wind: 'WIND', calm: 'CALM', byWind: '(wind)', watch: 'WATCH', est: 'EST.', estimated: 'ESTIMATED', landed: 'LANDED', attCalc: 'COMPUTED ATTITUDE',
     stTitle: 'RECEPTION', today: 'today', stSeen: 'AIRCRAFT', stNow: 'IN VIEW', stPeak: n => `peak ${n}`, stMil: n => `${n} military`, stRange: 'MAX RANGE',
     stRecord: 'RECORD', stHigh: 'HIGHEST', stFast: 'FASTEST', stCover: 'COVERAGE', stats: 'Stats' },
   fr: { filters: ['TOUS', 'MILITAIRES', 'HELICOS', 'BASSE ALT.', 'AEROPORT', 'GROS PORTEURS', 'AU-DESSUS'], follow: 'SUIVI', ground: 'SOL', mil: 'MIL',
@@ -35,7 +35,7 @@ const STRINGS = {
     back: 'Retour', close: 'Fermer', next: 'Suite', unknown: 'inconnu', seen: 'observé', noAircraft: r => `Aucun avion dans ${r} km`, noTraffic: 'Aucun trafic pour cet aéroport',
     brgAt: b => `au ${b}°`, altMin: 'ALT MIN', none: 'aucun', filter: 'FILTRE', bright: 'ECRAN', labels: 'ETIQUETTES', trails: 'TRAINEES', map: 'CARTE',
     overflight: t => `Survol ${t} min`, at: d => `à ${d} km`, locale: 'fr-FR', eta: 'TOUCHER', slope: 'pente', rwy: 'PISTE',
-    traffic: n => `${n} avion${n > 1 ? 's' : ''}`, airports: 'Aéroports', wind: 'VENT', calm: 'CALME', byWind: '(vent)', watch: 'SURVEILLE', est: 'EST.', estimated: 'ESTIME', landed: 'POSE',
+    traffic: n => `${n} avion${n > 1 ? 's' : ''}`, airports: 'Aéroports', wind: 'VENT', calm: 'CALME', byWind: '(vent)', watch: 'SURVEILLE', est: 'EST.', estimated: 'ESTIME', landed: 'POSE', attCalc: 'ASSIETTE CALCULEE',
     stTitle: 'RECEPTION', today: "aujourd'hui", stSeen: 'AVIONS', stNow: 'EN VUE', stPeak: n => `pic ${n}`, stMil: n => `${n} militaires`, stRange: 'PORTEE MAX',
     stRecord: 'RECORD', stHigh: 'PLUS HAUT', stFast: 'PLUS RAPIDE', stCover: 'COUVERTURE', stats: 'Stats' },
 }
@@ -78,6 +78,7 @@ let night = false, dayBrightness = 1
 let spotIdx = 0, spotAt = 0                  // spotlight banner on the wheel screen
 let picker = false, pickerPage = 0           // airport picker on the 12 tiles
 let follow = true                            // the view follows the selected aircraft
+let cockpit = false                          // wheel screen: flight instrument of the selected aircraft instead of the scope
 let lastSelected = null
 let lostSince = 0
 function goHome() { const ap = airportMode && airportByIcao(selAirport); view = ap ? { lat: ap.lat, lon: ap.lon } : { lat: cfg.lat, lon: cfg.lon } }
@@ -139,6 +140,7 @@ async function poll() {
       .sort((a, b) => a.d - b.d)
     const now = Date.now()
     applyLandingEstimates(now)
+    updateBank(now)
     for (const a of aircraft) { a.watch = watched(a); a.cls = iconClass(a) }
     for (const a of aircraft) {
       if (a.seenPos > 15 || a.est) continue
@@ -289,6 +291,29 @@ async function loadAirports() {
   console.log(`Airports loaded: ${airports.length}${airfields.length ? ` and ${airfields.length} small airfields` : ''}${selAirport ? `, selected ${selAirport}` : ''}`)
 }
 const airportByIcao = icao => airports.find(a => a.icao === icao)
+
+// ---------- Turn rate and bank angle ----------
+// ADS-B carries no attitude. The bank angle of a coordinated turn follows from the ground speed and the turn rate
+// (tan bank = speed x turn rate / g); the turn rate is measured on the received track over the last seconds, long
+// enough to smooth out the one-degree steps of the track.
+const trackLog = new Map() // hex -> [{ t, track }] over the last 12 s
+function updateBank(now) {
+  const keep = new Map()
+  for (const a of aircraft) {
+    a.bank = 0
+    if (a.track == null || a.est || a.seenPos > 10) continue
+    const log = (trackLog.get(a.hex) || []).filter(p => now - p.t < 12000)
+    log.push({ t: now, track: a.track })
+    keep.set(a.hex, log)
+    const first = log[0], dt = (now - first.t) / 1000
+    if (dt < 4 || !a.speed || a.ground) continue
+    const rate = ((((a.track - first.track) + 540) % 360) - 180) / dt // degrees per second, + = turning right
+    if (Math.abs(rate) < 0.15) continue
+    a.bank = Math.max(-40, Math.min(40, Math.atan(a.speed * 0.5144 * toRad(rate) / 9.81) * 180 / Math.PI))
+  }
+  trackLog.clear()
+  for (const [k, v] of keep) trackLog.set(k, v)
+}
 
 // ---------- Estimated landings ----------
 // The receiver usually loses a landing aircraft a few kilometres before the runway, below its radio horizon.
@@ -920,7 +945,7 @@ function wrapText(g, s, cx, y, maxW, lineH, opts) {
 function pill(g, s, x, y, { px = 9, fg = UI.text, bg = '#1a242d', align = 'left', padX = 4, h = 13 } = {}) {
   g.font = font(px, 700)
   const w = Math.ceil(g.measureText(s).width) + padX * 2
-  const x0 = align === 'right' ? x - w : x
+  const x0 = align === 'right' ? x - w : align === 'center' ? x - w / 2 : x
   g.fillStyle = bg; g.beginPath(); g.roundRect(x0, y - h + 3, w, h, h / 2); g.fill()
   g.textAlign = 'left'; g.textBaseline = 'alphabetic'; g.fillStyle = fg; g.fillText(s, x0 + padX, y)
   return w
@@ -1032,8 +1057,153 @@ function spotlightTarget(list) {
   return a
 }
 
+// ---------- Wheel screen: cockpit view (button 5) ----------
+// A primary flight display for the selected aircraft, built from what it broadcasts: ground speed, altitude, track
+// and vertical speed. The horizon is computed, not received: pitch is the flight path angle (vertical speed over
+// ground speed) and bank comes from the turn rate, which the display says. On approach, the runway and its axis
+// are drawn in perspective, with the localizer and glide path deviations.
+function drawCockpit(g, a) {
+  const S = 5 // pixels per degree, for the horizon and the outside view alike
+  const fpa = a.speed > 30 && !a.ground ? Math.atan2((a.vrate ?? 0) * 0.00508, a.speed * 0.5144) * 180 / Math.PI : 0
+  const bank = a.bank ?? 0, app = approachOf(a), hy = fpa * S
+  g.save()
+  g.beginPath(); g.arc(C, C, 120, 0, Math.PI * 2); g.clip()
+  g.translate(C, C); g.rotate(-toRad(bank))
+  const sky = g.createLinearGradient(0, hy - 150, 0, hy)
+  sky.addColorStop(0, '#0d3f86'); sky.addColorStop(1, '#3f8fe6')
+  g.fillStyle = sky; g.fillRect(-200, -200, 400, 200 + hy)
+  const ground = g.createLinearGradient(0, hy, 0, hy + 150)
+  ground.addColorStop(0, '#8a5a2b'); ground.addColorStop(1, '#4a2f14')
+  g.fillStyle = ground; g.fillRect(-200, hy, 400, 200 - hy + 200)
+
+  if (app) { // outside view: runway and extended centreline, as seen from the aircraft
+    const altM = (a.alt ?? 0) * 0.3048, elevM = app.end.elev * 0.3048
+    const proj = p => { // ground point -> screen offsets from the centre, or null when behind the aircraft
+      const d = kmBetween(a, p), rel = toRad(bearing(a, p) - a.track), f = d * Math.cos(rel), r = d * Math.sin(rel)
+      if (f < 0.04) return null
+      return [Math.atan2(r, f) * 180 / Math.PI * S, hy - Math.atan2(elevM - altM, d * 1000) * 180 / Math.PI * S]
+    }
+    const rw = app.ap.runways.find(w => w.a.id === app.end.id || w.b.id === app.end.id)
+    const far = rw ? (rw.a.id === app.end.id ? rw.b : rw.a) : offsetPt(app.end, app.end.course, 2.4)
+    const axis = [], steps = 24
+    for (let k = 0; k <= steps; k++) { const q = proj(offsetPt(app.end, app.end.course + 180, app.along * k / steps)); if (q) axis.push(q) }
+    if (axis.length > 1) {
+      g.strokeStyle = UI.magenta; g.lineWidth = 1.6; g.setLineDash([5, 4]); g.beginPath()
+      axis.forEach(([x, y], k) => k ? g.lineTo(x, y) : g.moveTo(x, y)); g.stroke(); g.setLineDash([])
+    }
+    const corners = [offsetPt(app.end, app.end.course - 90, 0.045), offsetPt(app.end, app.end.course + 90, 0.045), offsetPt(far, app.end.course + 90, 0.045), offsetPt(far, app.end.course - 90, 0.045)].map(proj) // drawn twice as wide as a real runway, to stay visible
+    if (corners.every(Boolean)) {
+      g.beginPath(); corners.forEach(([x, y], k) => k ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath()
+      g.fillStyle = '#3a424a'; g.fill(); g.strokeStyle = '#fff'; g.lineWidth = 1.6; g.stroke()
+    }
+  }
+
+  // horizon line and pitch ladder
+  g.strokeStyle = '#fff'; g.lineWidth = 1.6; g.beginPath(); g.moveTo(-200, hy); g.lineTo(200, hy); g.stroke()
+  g.font = font(8, 700); g.textBaseline = 'middle'; g.lineWidth = 1.2
+  for (let p = -20; p <= 20; p += 2.5) {
+    if (!p) continue
+    const y = hy - p * S, w = p % 10 === 0 ? 20 : p % 5 === 0 ? 12 : 6
+    if (Math.abs(y) > 64) continue
+    g.strokeStyle = 'rgba(255,255,255,0.9)'; g.beginPath(); g.moveTo(-w, y); g.lineTo(w, y); g.stroke()
+    if (p % 10 === 0) { g.fillStyle = '#fff'; g.textAlign = 'right'; g.fillText(String(Math.abs(p)), -w - 3, y); g.textAlign = 'left'; g.fillText(String(Math.abs(p)), w + 3, y) }
+  }
+  // bank scale, turning with the horizon
+  g.strokeStyle = '#fff'; g.lineWidth = 1.4
+  g.beginPath(); g.arc(0, 0, 78, toRad(-135), toRad(-45)); g.stroke()
+  for (const d of [-45, -30, -20, -10, 10, 20, 30, 45]) {
+    const t = toRad(d - 90), r2 = Math.abs(d) % 30 === 0 ? 86 : 83
+    g.beginPath(); g.moveTo(78 * Math.cos(t), 78 * Math.sin(t)); g.lineTo(r2 * Math.cos(t), r2 * Math.sin(t)); g.stroke()
+  }
+  g.fillStyle = '#fff'; g.beginPath(); g.moveTo(0, -78); g.lineTo(-5, -87); g.lineTo(5, -87); g.closePath(); g.fill()
+  g.restore()
+
+  g.save()
+  g.beginPath(); g.arc(C, C, 120, 0, Math.PI * 2); g.clip()
+  // fixed bank index and aircraft symbol
+  g.fillStyle = UI.amber; g.strokeStyle = '#000'; g.lineWidth = 1
+  g.beginPath(); g.moveTo(C, C - 77); g.lineTo(C - 5, C - 68); g.lineTo(C + 5, C - 68); g.closePath(); g.fill(); g.stroke()
+  for (const k of [-1, 1]) { g.beginPath(); g.rect(C + k * 16 - (k < 0 ? 22 : 0), C - 2, 22, 4); g.rect(C + k * 16 - (k < 0 ? 0 : 4), C - 2, 4, 9); g.fill(); g.stroke() }
+  g.beginPath(); g.rect(C - 2.5, C - 2.5, 5, 5); g.fill(); g.stroke()
+
+  if (app) { // deviation from the localizer (bottom) and from the glide path (right): fly towards the diamond
+    const dot = 11, clamp = v => Math.max(-2.3, Math.min(2.3, v)), by = C + 50, rx = C + 47
+    g.strokeStyle = '#fff'; g.lineWidth = 1
+    for (let k = -2; k <= 2; k++) {
+      if (!k) { g.fillStyle = '#fff'; g.fillRect(C - 0.75, by - 5, 1.5, 10); g.fillRect(rx - 5, C - 0.75, 10, 1.5); continue }
+      g.beginPath(); g.arc(C + k * dot, by, 1.8, 0, Math.PI * 2); g.stroke()
+      g.beginPath(); g.arc(rx, C + k * dot, 1.8, 0, Math.PI * 2); g.stroke()
+    }
+    const diamond = (x, y) => { g.beginPath(); g.moveTo(x, y - 5); g.lineTo(x + 4, y); g.lineTo(x, y + 5); g.lineTo(x - 4, y); g.closePath(); g.fillStyle = UI.magenta; g.fill(); g.strokeStyle = '#000'; g.stroke() }
+    diamond(C - clamp(app.locDev / 1.25) * dot, by)
+    diamond(rx, C + clamp(app.gsDev / 0.35) * dot)
+  }
+
+  // tapes: ground speed on the left, altitude on the right, track at the bottom
+  const tape = (x, w, value, pxPer, minor, major, fmt) => {
+    g.save()
+    g.beginPath(); g.rect(x, C - 58, w, 116); g.clip()
+    g.fillStyle = 'rgba(6,10,14,0.66)'; g.fillRect(x, C - 58, w, 116)
+    g.font = font(8, 600); g.textBaseline = 'middle'; g.textAlign = x < C ? 'right' : 'left'
+    const first = Math.ceil((value - 62 / pxPer) / minor) * minor
+    for (let v = first; v <= value + 62 / pxPer; v += minor) {
+      if (v < 0) continue
+      const y = C - (v - value) * pxPer, isMajor = Math.round(v / minor) % Math.round(major / minor) === 0
+      g.fillStyle = 'rgba(255,255,255,0.85)'
+      if (x < C) { g.fillRect(x + w - (isMajor ? 7 : 4), y - 0.5, isMajor ? 7 : 4, 1); if (isMajor) g.fillText(fmt(v), x + w - 9, y) }
+      else { g.fillRect(x, y - 0.5, isMajor ? 7 : 4, 1); if (isMajor) g.fillText(fmt(v), x + 9, y) }
+    }
+    g.restore()
+  }
+  const readout = (x, w, text, color = '#fff', px = 13) => {
+    g.fillStyle = '#05080b'; g.strokeStyle = 'rgba(255,255,255,0.9)'; g.lineWidth = 1.2
+    g.beginPath(); g.roundRect(x, C - 10, w, 20, 3); g.fill(); g.stroke()
+    txt(g, text, x + w / 2, C + 5, { px, weight: 700, color, align: 'center', max: w - 4 })
+  }
+  const dim = a.est ? UI.mute : '#fff' // estimated landing: values are not received any more
+  if (a.speed != null) { tape(20, 30, a.speed, 2.1, 10, 20, v => String(v)); readout(14, 40, String(Math.round(a.speed)), dim) }
+  else readout(14, 40, '–', UI.mute)
+  txt(g, 'GS', 35, C - 63, { px: 8, weight: 700, color: '#dfe7ec', align: 'center' }); txt(g, 'kt', 35, C + 70, { px: 8, weight: 600, color: '#dfe7ec', align: 'center' })
+  if (a.ground) readout(182, 46, T.ground, UI.sub, 11)
+  else if (a.alt != null) { tape(190, 30, a.alt, 0.105, 100, 500, v => String(v / 100).padStart(3, '0')); readout(180, 48, Math.round(a.alt).toLocaleString(T.locale), dim, 12) }
+  else readout(182, 46, '–', UI.mute)
+  txt(g, 'ALT', 205, C - 63, { px: 8, weight: 700, color: '#dfe7ec', align: 'center' }); txt(g, 'ft', 205, C + 70, { px: 8, weight: 600, color: '#dfe7ec', align: 'center' })
+  const vr = a.vrate ?? 0
+  if (Math.abs(vr) >= 100) txt(g, `${vr > 0 ? '▲' : '▼'} ${Math.abs(Math.round(vr / 50) * 50)}`, 187, C + 84, { px: 9, weight: 700, color: vr > 0 ? UI.green : UI.amber, align: 'center' })
+
+  if (a.track != null) { // track tape
+    const y0 = 196, hw = 44, pxDeg = 2.6
+    g.save(); g.beginPath(); g.rect(C - hw, y0, hw * 2, 20); g.clip()
+    g.fillStyle = 'rgba(6,10,14,0.66)'; g.fillRect(C - hw, y0, hw * 2, 20)
+    g.font = font(8, 600); g.textAlign = 'center'; g.textBaseline = 'alphabetic'
+    for (let d = Math.ceil((a.track - 20) / 5) * 5; d <= a.track + 20; d += 5) {
+      const x = C + (d - a.track) * pxDeg, v = ((d % 360) + 360) % 360
+      g.fillStyle = 'rgba(255,255,255,0.85)'; g.fillRect(x - 0.5, y0, 1, d % 10 === 0 ? 5 : 3)
+      if (d % 10 === 0) g.fillText(v % 90 === 0 ? 'NESW'[v / 90] : String(v / 10).padStart(2, '0'), x, y0 + 15)
+    }
+    g.restore()
+    g.fillStyle = '#05080b'; g.strokeStyle = 'rgba(255,255,255,0.9)'; g.lineWidth = 1.2
+    g.beginPath(); g.roundRect(C - 16, y0 - 2, 32, 15, 3); g.fill(); g.stroke()
+    txt(g, `${String(Math.round(a.track) % 360).padStart(3, '0')}°`, C, y0 + 10, { px: 10, weight: 700, align: 'center' })
+  }
+
+  // who it is, what it is doing, and the reminder that the attitude is computed
+  pill(g, a.flight || a.hex.toUpperCase(), C, 26, { px: 11, fg: '#fff', bg: 'rgba(5,8,11,0.85)', align: 'center', h: 16 })
+  if (a.est) pill(g, a.est.landed ? `${T.landed} ${app.end.id}` : `${T.est} ${app.end.id} ~ ${etaText(app.eta)}`, C, 44, { px: 8, fg: a.est.landed ? UI.green : UI.amber, bg: 'rgba(5,8,11,0.85)', align: 'center', h: 12 })
+  else if (app) pill(g, `ILS ${app.end.id} ${app.ap.iata || app.ap.icao}  ${app.along.toFixed(1)} km`, C, 44, { px: 8, fg: UI.cyan, bg: 'rgba(5,8,11,0.85)', align: 'center', h: 12 })
+  pill(g, T.attCalc, C, C + 70, { px: 7, fg: UI.amber, bg: 'rgba(5,8,11,0.6)', align: 'center', h: 11 })
+  g.restore()
+
+  // bezel
+  g.fillStyle = 'rgba(3,6,9,0.9)'
+  g.beginPath(); g.arc(C, C, 121, 0, Math.PI * 2); g.arc(C, C, 117, 0, Math.PI * 2, true); g.fill('evenodd')
+  g.strokeStyle = 'rgba(255,255,255,0.32)'; g.lineWidth = 1; g.beginPath(); g.arc(C, C, 117, 0, Math.PI * 2); g.stroke()
+}
+
 function drawRadar() {
   const g = knobCanvas.getContext('2d')
+  const flown = cockpit && aircraft.find(a => a.hex === selectedHex)
+  if (flown) { drawCockpit(g, flown); return toRGB565(knobCanvas, true) } // cockpit view needs a selected aircraft; the scope stays otherwise
   const range = RANGES[rangeIdx]
   drawMap(rangeIdx, view, g)
 
@@ -1189,6 +1359,7 @@ function drawChips(g) {
   if (selectedHex && follow) modes.push({ text: T.follow, color: UI.green })
   if (airportMode && selAirport) { const ap = airportByIcao(selAirport); modes.push({ text: ap?.iata || selAirport, color: UI.cyan }) }
   if (filterIdx) modes.push({ text: FILTERS[filterIdx].name, color: FILTERS[filterIdx].color })
+  if (cockpit) modes.push({ text: 'COCKPIT', color: UI.cyan }) // armed: shows as soon as an aircraft is selected
   if (minAltFt) modes.push({ text: `≥ ${minAltFt / 1000}k ft`, color: UI.amber }) // an altitude floor hides aircraft: keep it in sight
   if (modes.length) row(modes, 39)
 }
@@ -1684,15 +1855,16 @@ async function notifyHA(msg) {
   } catch (e) { console.error('Home Assistant notification:', e.message) }
 }
 
-// LEDs: button 1 = night mode, 2 = airport picker, 3 = airport mode, 4 = statistics, 8 = alert (blinking) or watch list (violet)
+// LEDs: button 1 = night mode, 2 = airport picker, 3 = airport mode, 4 = statistics, 5 = cockpit view, 8 = alert (blinking) or watch list (violet)
 let blink = false
 const lastLeds = []
 function updateLeds() {
-  const cols = Array(7).fill('#000000') // buttons 5 to 7 are free
+  const cols = Array(7).fill('#000000') // buttons 6 and 7 are free
   if (night) cols[0] = '#400000'
   if (airports.length) cols[1] = picker ? '#00c0ff' : '#003040'
   if (airportMode) cols[2] = '#00c0ff'
   if (statsMode) cols[3] = '#00c0ff'
+  if (cockpit) cols[4] = '#00c0ff'
   const alertCol = { emerg: '#ff0000', warn: '#ff6a00', info: '#ffd000', watch: '#9000ff' }[alertLevel]
   cols.push(alertCol ? (blink || alertLevel === 'info' || alertLevel === 'watch' ? alertCol : '#000000') : '#000000')
   cols.forEach((color, id) => { if (lastLeds[id] !== color) { lastLeds[id] = color; safe(() => device.setButtonColor({ id, color })) } })
@@ -1834,6 +2006,7 @@ async function main() {
     else if (id === 1) { statsMode = false; togglePicker() } // button 2: airport picker
     else if (id === 2) { picker = false; setAirportMode(!airportMode) } // button 3: airport mode
     else if (id === 3) { statsMode = !statsMode; picker = false; statsSel = selectedHex } // button 4: reception statistics
+    else if (id === 4) cockpit = !cockpit // button 5: cockpit view of the selected aircraft on the wheel
     else if (id === 7) { // button 8: show the watched aircraft if there is one, and acknowledge alerts for 5 min
       const w = aircraft.find(a => a.watch && !watchAck.has(a.hex))
       if (w) { selectedHex = w.hex; picker = false; statsMode = false }
@@ -1851,13 +2024,13 @@ async function main() {
     else if (id === 'b') pan(0, 1)
     else if (id === 'c') pan(-1, 0)
     else if (id === 'd') pan(1, 0)
-    else if (id === 'e' || id === 'home') { picker = false; statsMode = false; selAirport = defaultAirport; setAirportMode(false) } // back to home
+    else if (id === 'e' || id === 'home') { picker = false; statsMode = false; cockpit = false; selAirport = defaultAirport; setAirportMode(false) } // back to home
     refreshCenterNow()
   })
   device.on('touchstart', ({ changedTouches }) => {
     const t = changedTouches[0]
     if (cfg.debug) console.log('touch', JSON.stringify({ x: t.x, y: t.y, target: t.target }))
-    if (t.target?.screen === 'knob') selectNearestTo(t.x, t.y)
+    if (t.target?.screen === 'knob') { if (cockpit && aircraft.some(a => a.hex === selectedHex)) cockpit = false; else selectNearestTo(t.x, t.y) } // a tap on the cockpit view goes back to the scope
     else if (t.target?.screen === 'center') {
       const k = t.target.key
       if (picker) {
@@ -1905,6 +2078,6 @@ function setState(st) {
   for (const [k, set] of Object.entries({
     rangeIdx: v => { rangeIdx = v }, filterIdx: v => { filterIdx = v }, labelsMax: v => { labelsMax = v }, sweep: v => { sweep = v },
     spotIdx: v => { spotIdx = v; spotAt = Date.now() }, blink: v => { blink = v }, view: v => { view = v }, selAirport: v => { selAirport = v },
-    airportMode: v => { airportMode = v }, picker: v => { picker = v }, statsMode: v => { statsMode = v; statsSel = selectedHex }, stats: v => { stats = { ...newDay(), ...v, seen: new Map(v.seen) }; record = v.record; msgRate = v.msgRate }, pickerPage: v => { pickerPage = v }, minAltFt: v => { minAltFt = v },
+    airportMode: v => { airportMode = v }, picker: v => { picker = v }, statsMode: v => { statsMode = v; statsSel = selectedHex }, cockpit: v => { cockpit = v }, stats: v => { stats = { ...newDay(), ...v, seen: new Map(v.seen) }; record = v.record; msgRate = v.msgRate }, pickerPage: v => { pickerPage = v }, minAltFt: v => { minAltFt = v },
   })) if (k in st) set(st[k])
 }

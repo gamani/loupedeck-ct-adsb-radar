@@ -90,7 +90,7 @@ export async function render(api) {
     console.log('wrote docs/screenshots/' + name)
   }
 
-  const base = { rangeIdx: 2, sweep: 300, labelsMax: 5, spotIdx: 2, selectedHex: null, view: home, airportMode: false, picker: false, statsMode: false, selAirport: ap?.icao }
+  const base = { rangeIdx: 2, sweep: 300, labelsMax: 5, spotIdx: 2, selectedHex: null, view: home, airportMode: false, picker: false, statsMode: false, cockpit: false, selAirport: ap?.icao }
   setState(base)
   await shot('overview.png')
 
@@ -103,6 +103,11 @@ export async function render(api) {
   if (ap) {
     setState({ ...base, airportMode: true, rangeIdx: 1, view: { lat: ap.lat, lon: ap.lon }, selectedHex: FINALS[0].hex, follow: false })
     await shot('approach.png')
+    const flown = list.find(a => a.hex === FINALS[0].hex)
+    if (flown) flown.bank = 4 // a gentle correction to the right, for the picture
+    setState({ cockpit: true })
+    await shot('cockpit.png')
+    setState({ cockpit: false })
   }
 
   if (ap) { // airport mode: traffic of the airport with its weather tile (fictitious METAR)

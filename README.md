@@ -49,6 +49,10 @@ These deviations are computed from ADS-B data (position once per second, altitud
 
 ![Emergency squawk](docs/screenshots/emergency.png)
 
+**Cockpit view**: button 5 turns the wheel into a primary flight display for the selected aircraft: ground speed and altitude tapes, track, vertical speed and an artificial horizon. On approach, the runway and its axis appear in perspective, with the localizer and glide path deviations. ADS-B carries no attitude, so the horizon is computed from what is received (pitch from the vertical speed, bank from the turn rate), and the display says so. Tap the wheel to go back to the scope.
+
+![Cockpit view](docs/screenshots/cockpit.png)
+
 **Reception statistics**: button 4 shows today's figures: aircraft seen, peak, maximum range (and your all-time record), highest, fastest, top airlines and a polar plot of your coverage, which is also drawn on the scope. Handy to judge an antenna.
 
 ![Reception statistics](docs/screenshots/stats.png)
@@ -77,6 +81,7 @@ These deviations are computed from ADS-B data (position once per second, altitud
 | Round button 2 | Open / close the airport picker |
 | Round button 3 | Airport mode on / off |
 | Round button 4 | Reception statistics on / off |
+| Round button 5 | Cockpit view of the selected aircraft on the wheel, on / off |
 | Round button 8 | Alert indicator; press to acknowledge alerts for 5 minutes. Violet = an aircraft of the watch list is in range: press to jump to it |
 | A / B / C / D (arrows) | Pan the map (stops following) |
 | E or Home (○) | Back to home: leaves airport mode, stops following |
@@ -88,7 +93,7 @@ These deviations are computed from ADS-B data (position once per second, altitud
 | Tap an airport in the picker | Select it and switch to airport mode |
 | Tap the airport tile (airport mode) | Open the picker |
 
-Round buttons 5 to 7 are free for your own ideas.
+Round buttons 6 and 7 are free for your own ideas.
 
 ## Requirements
 
